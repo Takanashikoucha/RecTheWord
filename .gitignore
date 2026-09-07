@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# App data (never commit)
+models/
+recordings/
+config.json
+*.wav
+*.mp3
+
+# Vendored binaries
+vendor/ffmpeg/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# test / local venv
+.pytest_cache/
+.venvtest/
