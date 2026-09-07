@@ -1,7 +1,7 @@
 # RecTheWord 进度 / 交接文档
 
 > 本文档随实现推进随时追加，供另一个会话 handoff 继续。
-> 最后更新：首次第一版构建完成。
+> 最后更新：首次第一版构建完成，已推送 v0.1.0 到远端 `main`（commit `1172ea6`）。
 
 ## 环境事实（构建会话）
 
@@ -68,3 +68,8 @@
 
 - **v0.1.0**（首次）：完整第一版。FFmpeg 双路 WASAPI 共享采集 + FunASR 双路实时 +
   离线说话人分离 + 姓名标注 + 实时翻译 + AI 会议纪要 + PySide6 UI + 文档/脚本/单测。
+  - 已推送到远端 `main`，commit `1172ea6`。
+  - 推送方式说明：构建机网络下 `git -c http.extraheader="Authorization: Bearer <PAT>"`
+    会超时/鉴权失败，改用 **URL 内嵌 token**（`https://x-access-token:<PAT>@github.com/...`）
+    推送成功。token **未写入** remote URL、`.git/config` 或任何文件（仅命令行临时使用）。
+  - 单测：`tests/` 共 20 个用例全部通过（需 `pip install numpy pytest`）。
