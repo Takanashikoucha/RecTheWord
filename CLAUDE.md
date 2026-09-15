@@ -33,7 +33,7 @@ app/               # all application modules (package)
   └── funasr_nano/      (vendored nano model code)
 config.yaml        # base defaults (anchored to repo root, next to main.py)
 requirements.txt
-install.ps1 / start.bat / update.bat / build_release.ps1
+install.ps1 / start.bat
 ```
 
 Runtime resources anchor to their owning file's directory: `config.yaml` and

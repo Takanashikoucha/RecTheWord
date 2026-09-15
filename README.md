@@ -91,7 +91,7 @@ app/                    # 全部应用模块（包）
   ├─ i18n.py + i18n/   # UI 字符串 + 更新日志
   └─ funasr_nano/      # vendored nano 模型代码
 config.yaml             # 基础默认（锚定仓库根，紧邻 main.py）
-install.ps1 / start.bat / update.bat / build_release.ps1
+install.ps1 / start.bat
 ```
 
 ## 配置
