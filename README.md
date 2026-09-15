@@ -1,137 +1,152 @@
-# RecTheWord
+# LiveTranslate
 
-实时多语转录（中 / 英 / 日）+ 说话人分离 + 实时中文翻译 + AI 会议纪要。
-基于 **FFmpeg（WASAPI 共享采集）** + **FunASR（流式 + 离线分离）** + **PySide6**，
-面向 **Windows CPU（无 GPU）** 的低延迟场景。
+**English** | [中文](README_zh.md)
 
----
+Real-time audio translation for Windows. Captures system audio (WASAPI loopback) and optional microphone input, runs ASR, translates via LLM API, and displays results in a transparent overlay.
 
-## 功能
+Works with any system audio — videos, livestreams, voice chat. No player modifications needed.
 
-| 功能 | 说明 |
-|---|---|
-| **设备枚举** | 用 FFmpeg `dshow` 列出全部麦克风与扬声器，界面各选一个。 |
-| **共享采集** | FFmpeg `wasapi -shared` 抓取麦克风 + 扬声器回环（`loopback:`），不独占设备。 |
-| **实时字幕（分路）** | 麦克风流与扬声器流**各自独立**流式识别（`paraformer-zh-streaming`），分别以 `🎤 麦克风` / `🔊 扬声器` 标注显示，支持中/英/日。 |
-| **实时翻译** | 可选配置外部 **OpenAI 兼容接口**，把识别文字按句节流翻译成简体中文并显示。 |
-| **离线说话人分离** | 结束录制后，对混合录音跑 **SenseVoice + FSMN-VAD + CT-PUNC + CAM++**，得到**按说话人分开、带时间戳**的全量稿。 |
-| **说话人标注** | 把匿名 `说话人0/1/…` 映射为**真实姓名**（可编辑、持久化），即时应用到全量稿与纪要。 |
-| **会议纪要** | 把带姓名+时间戳的全量稿交给 AI，生成结构化中文纪要（议题 / 讨论要点 / 结论待办）。 |
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Windows](https://img.shields.io/badge/Platform-Windows-0078d4)
+![License](https://img.shields.io/badge/License-MIT-green)
 
----
+## Screenshot
 
-## 系统要求
+![LiveTranslate](screenshot/en.png)
 
-- **Windows 10 / 11 x64**
-- **Python 3.10 – 3.12**（PATH 中可用）
-- 网络（首次运行下载 ASR 模型与 FFmpeg 二进制）
-- CPU 即可运行（无 GPU 要求）
+## Video
 
----
+[![Install & Demo](https://img.shields.io/badge/Bilibili-Install%20%26%20Demo-00A1D6?logo=bilibili)](https://www.bilibili.com/video/BV1K2Awz6Euw)
 
-## 安装与运行
+## Features
 
-```bat
-:: 一次性安装（装依赖 + 下载 FFmpeg）
-scripts\install_windows.bat
+- **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
+- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper
+- **Remote ASR**: offload speech recognition to a GPU machine over HTTP — see [REMOTE_ASR.md](REMOTE_ASR.md)
+- **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
+- **Streaming translation display**: Real-time character-by-character translation output
+- **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
+- **Microphone mix-in**: Optionally mix microphone input with system audio for ASR
+- **Low-latency VAD**: 32ms chunks + Silero VAD with adaptive silence detection
+- **Transparent overlay**: Always-on-top, click-through, draggable, 14 color themes
+- **CUDA acceleration**: GPU-accelerated ASR inference
+- **Auto model management**: Setup wizard, ModelScope / HuggingFace dual sources
+- **Built-in benchmark**: Compare translation model speed and quality
 
-:: 启动
-scripts\run.bat
-:: 或
-python main.py
+## Changelog
+
+See [English Changelog](i18n/CHANGELOG_en.md) | [中文更新日志](i18n/CHANGELOG_zh.md)
+
+## Requirements
+
+- **OS**: Windows 10/11
+- **Python**: 3.10–3.12 (or use the portable build)
+- **GPU** (recommended): NVIDIA + CUDA 12.6 (Blackwell GPUs like RTX 50xx require CUDA 12.8)
+- **Network**: Access to a translation API
+
+## Quick Start
+
+### Portable build (no Python required, recommended for non-developers)
+
+Download `LiveTranslate-portable-*.zip` from [Releases](https://github.com/TheDeathDragon/LiveTranslate/releases), unzip, and double-click **`start.bat`**. The first run auto-downloads a portable Python 3.12 and installs GPU-aware dependencies — no Python installation needed.
+
+### From source
+
+```bash
+git clone https://github.com/TheDeathDragon/LiveTranslate.git
+cd LiveTranslate
 ```
 
-首次点击“开始”会**自动下载 ASR 模型**（几十到上百 MB，取决于所选模型），
-请耐心等待状态栏提示“模型加载完成”。
+Double-click **`install.bat`** — the installer will:
+1. Detect Python 3.10–3.12 (auto-install via winget if missing)
+2. Create a virtual environment
+3. Auto-detect NVIDIA GPU and let you choose CUDA / CPU PyTorch
+4. Install all dependencies
 
-### 手动安装（如一键脚本失败）
+Then double-click **`start.bat`** to launch.
 
-```bat
+To update, double-click **`update.bat`** — it will pull the latest code and update dependencies (auto-installs Git via winget if missing).
+
+<details>
+<summary>Manual install</summary>
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+
+# PyTorch (choose one)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA (RTX 50xx)
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # CPU only
+
+# Dependencies
 pip install -r requirements.txt
-python scripts\download_ffmpeg_windows.py
+
+# Launch
+.venv\Scripts\python.exe main.py
 ```
 
----
+</details>
 
-## 使用流程
+## First Launch
 
-1. 启动后界面自动枚举设备。**麦克风**下拉选输入设备，**扬声器**下拉选回环设备。
-   （若扬声器列表为空，可只录麦克风；扬声器回环用于捕获“对方/系统播放的声音”。）
-2. 点 **⚙ 设置**：
-   - 配置外部 AI（Base URL / API Key / 模型 / 温度）以启用实时翻译与会议纪要；
-   - 可选改 ASR 模型 / hub（ModelScope 或 HuggingFace）/ CPU 线程数 / 本地模型目录。
-3. 点 **● 开始**：实时字幕与翻译开始滚动。
-4. 点 **■ 停止**：
-   - 冲刷识别缓存；
-   - 离线做说话人分离（耗时数十秒到数分钟，取决于录音长度与 CPU）；
-   - 下方显示**分说话人全量稿**与（若配置 AI）**会议纪要**。
-5. 在**全量稿**中可把说话人改名为真实姓名（自动保存到配置，下次复用）。
+1. Setup wizard appears — choose download source (ModelScope / HuggingFace) and cache path
+2. Silero VAD + SenseVoice models download automatically (~1GB)
+3. Main UI appears when ready
 
-> 说明：实时路径为 CPU 低延迟设计，**实时字幕按“麦 vs 扬”两路区分**，不做逐句精确到每个
-> 人的分离；**逐说话人精确分离 + 真实姓名标注 + 纪要在“停止”时离线完成**。
+## Translation API
 
----
+Settings → Translation tab:
 
-## 目录结构
+| Parameter | Example |
+|-----------|---------|
+| API Base | `https://api.deepseek.com/v1` |
+| API Key | Your key |
+| Model | `deepseek-chat` |
+| Proxy | `none` / `system` / custom URL |
+
+## Architecture
 
 ```
-main.py                     # 入口
-rectheword/
-  audio/   devices.py  capture.py     # 设备枚举 + WASAPI 双路采集/混合
-  asr/     engine.py                  # 流式 + 离线（分离）引擎
-  pipeline/ dual_pipeline.py diarize.py  # 双声道拆分/切块 + 离线分离
-  ai/      client.py translate.py minutes.py  # OpenAI 兼容客户端 / 翻译 / 纪要
-  labels.py                         # 说话人姓名标注
-  config.py                         # 配置持久化
-  ui/      main_window.py settings_dialog.py  # PySide6 界面
-scripts/    download_ffmpeg_windows.py install_windows.bat run.bat
-tests/      纯逻辑单测（无需 ML / Qt 运行时）
-docs/       DESIGN.md  PROGRESS.md
-models/ recordings/ vendor/ffmpeg/    # 运行期产物（不入库，已 gitignore）
+Audio (WASAPI 32ms) → VAD (Silero) → ASR → LLM Translation → Overlay
+         ↑ optional mic mix-in
 ```
 
----
-
-## 配置（`~/.rectheword/config.json`，不入库）
-
-保存：所选设备、AI 端点/Key/模型、ASR 模型与 hub、CPU 线程、本地模型目录、
-**说话人姓名映射**（跨会话复用）。
-
----
-
-## 调试（Windows）
-
-- **枚举设备**：`python -m rectheword.audio.devices`
-- **FFmpeg 是否可用**：`ffmpeg -version`
-- **手动试采**（验证共享/回环）：
-  ```bat
-  ffmpeg -f wasapi -shared 1 -sample_rate 16000 -i "麦克风名" -f wasapi -shared 1 -sample_rate 16000 -i "loopback:扬声器名" -filter_complex "[0:a]aformat=sample_rates=16000:channel_layouts=mono[m];[1:a]aformat=sample_rates=16000:channel_layouts=mono[s];[m][s]join=inputs=2:channel_layouts=stereo[o]" -map "[o]" -f f32le test.raw
-  ```
-- 状态栏会回显 ffmpeg `stderr` 尾部，常见报错见下。
-
-### 常见报错
-
-| 现象 | 处理 |
-|---|---|
-| `Device or resource busy` / 独占 | 确认用**共享模式**（本应用默认）；关掉独占该设备的全屏/独占程序。 |
-| 扬声器回环无声音 / 设备找不到 | 确认所选是**渲染（输出）设备**；部分设备不支持 loopback，换一个扬声器试试。 |
-| 模型下载慢/失败 | 在“设置”把 hub 切到 `hf`（HuggingFace）；或预先用 `model_dir` 指定已下载目录。 |
-| 实时延迟高 | 降低“CPU 线程数”或减少同开的其他程序；日语实时质量受流式模型限制（离线稿更好）。 |
-| 未识别到内容 | 检查麦克风选择、音量；纯静音不会出字。 |
-
----
-
-## 测试
-
-纯逻辑单测（无需安装 torch/funasr，但需要 `numpy`）：
-
-```bat
-pip install pytest numpy
-python -m pytest tests/ -q
+```
+main.py                 Entry point & pipeline
+├── audio_capture.py    WASAPI loopback + mic mix-in
+├── vad_processor.py    Silero VAD
+├── asr_engine.py       faster-whisper backend
+├── asr_funasr.py       Unified FunASR model selector backend
+├── asr_sensevoice.py   SenseVoice backend
+├── asr_funasr_nano.py  FunASR Nano backend
+├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)
+├── asr_remote.py        Remote Whisper client (→ asr_server.py, see REMOTE_ASR.md)
+├── translator.py       OpenAI-compatible client (streaming, JSON schema, context)
+├── model_manager.py    Model download & cache
+├── subtitle_overlay.py PyQt6 overlay
+├── control_panel.py    Settings UI (7 tabs)
+├── dialogs.py          Wizard, download & model config dialogs
+└── benchmark.py        Translation benchmark
 ```
 
----
+## Acknowledgements
 
-## 许可
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — Whisper inference via CTranslate2
+- [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
+- [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — Japanese anime/galgame ASR
+- [Silero VAD](https://github.com/snakers4/silero-vad) — Voice activity detection
 
-软件代码 MIT；模型权重许可见各自模型卡（FunASR / ModelScope / HuggingFace）。
+## Star History
+
+<a href="https://www.star-history.com/?repos=TheDeathDragon%2FLiveTranslate&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=TheDeathDragon/LiveTranslate&type=date&theme=dark&legend=top-left&sealed_token=0t-kzcN9leqL-yaHdKcBdHLdLlE6NNHa48RpsLvUM3u2fOiZOYqWfjgplXxAtjk1ZJciSAbzI3gZ4PQqqHrOv4abM1CpOomUymVX6J1zPN-3Ygu0-Xr8Kpj3Xt8jWS05B4tTpuNSmoYqyHipPvKC7lxGfLcOF_zctjqvOka-j9gYWct0oQyJnGjdcZxY" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=TheDeathDragon/LiveTranslate&type=date&legend=top-left&sealed_token=0t-kzcN9leqL-yaHdKcBdHLdLlE6NNHa48RpsLvUM3u2fOiZOYqWfjgplXxAtjk1ZJciSAbzI3gZ4PQqqHrOv4abM1CpOomUymVX6J1zPN-3Ygu0-Xr8Kpj3Xt8jWS05B4tTpuNSmoYqyHipPvKC7lxGfLcOF_zctjqvOka-j9gYWct0oQyJnGjdcZxY" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=TheDeathDragon/LiveTranslate&type=date&legend=top-left&sealed_token=0t-kzcN9leqL-yaHdKcBdHLdLlE6NNHa48RpsLvUM3u2fOiZOYqWfjgplXxAtjk1ZJciSAbzI3gZ4PQqqHrOv4abM1CpOomUymVX6J1zPN-3Ygu0-Xr8Kpj3Xt8jWS05B4tTpuNSmoYqyHipPvKC7lxGfLcOF_zctjqvOka-j9gYWct0oQyJnGjdcZxY" />
+ </picture>
+</a>
+
+## License
+
+[MIT License](LICENSE)
