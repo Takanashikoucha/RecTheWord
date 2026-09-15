@@ -11,12 +11,15 @@ and **manually-triggered** offline diarization + speaker labeling + AI meeting
 minutes. Built on the [LiveTranslate](https://github.com/TheDeathDragon/LiveTranslate)
 pipeline (MIT, verified Windows chain), rebranded and extended for meetings.
 
-Hardware target: office PC, **CPU-only, 16GB RAM**. The lightweight ASR model
-(SenseVoice-Small, ~894MB, from ModelScope) is **pre-fetched by `install.ps1`
-(step 8)** into `models/modelscope/models/iic--SenseVoiceSmall/` so the app is
-out-of-the-box after install. It is NOT committed to git (GitHub 100MB/file
-limit); the repo stays small and distributes via plain git. Larger models
-download on demand from ModelScope.
+Hardware target: office PC, **CPU-only, 16GB RAM**. Models are NOT committed to
+git (GitHub 100MB/file limit); the repo stays small and distributes via plain
+git. `install.ps1` pre-fetches them so the app is out-of-the-box after install:
+- **SenseVoice-Small** (default ASR, ~894MB) ← ModelScope (step 8)
+- **Whisper base + small** (common alternatives, 148/488MB) ← HF mirror
+  `https://hf-mirror.com` preferred, GitHub Release asset as backup (step 9)
+
+Larger models (Fun-ASR-Nano, Whisper medium/large) download on demand from
+ModelScope / the HF mirror.
 
 ## Running
 

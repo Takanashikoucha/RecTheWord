@@ -317,6 +317,45 @@ if (Test-Path $ModelPt) {
     }
 }
 
+# ── Step 9: Pre-fetch the common Whisper ASR models (base + small) ──
+# These are also shipped as GitHub Release assets as a backup for networks where
+# the HF mirror is unreachable. Order per model: already-present -> HF mirror
+# (preferred) -> Release asset. All fall back gracefully; the app can also
+# fetch on first launch.
+Write-Step "Pre-fetching Whisper base + small (skip if present)..."
+
+$ReleaseBase = "https://github.com/Takanashikoucha/RecTheWord/releases/download/v1.0.0"
+$WhisperHub  = Join-Path $ProjectDir "models\huggingface\hub"
+
+function Fetch-Whisper {
+    param([string]$Size, [long]$MinBytes)
+    $Snap = Join-Path $WhisperHub "models--Systran--faster-whisper-$Size\snapshots\master"
+    $Bin  = Join-Path $Snap "model.bin"
+    if (Test-Path $Bin) { Write-Ok "Whisper $Size already present, skipping"; return }
+    New-Item -ItemType Directory -Force -Path $Snap | Out-Null
+    # 1) HF mirror (preferred)
+    try {
+        & $Python -c "import os; os.environ['HF_ENDPOINT']='https://hf-mirror.com'; from huggingface_hub import snapshot_download; snapshot_download(repo_id='Systran/faster-whisper-$Size', local_dir=r'$Snap')"
+        if ((Test-Path $Bin) -and ((Get-Item $Bin).Length -ge $MinBytes)) {
+            Write-Ok "Whisper $Size ready (HF mirror)"; return
+        }
+    } catch { Write-Warn "Whisper $Size HF mirror fetch failed: $($_.Exception.Message)" }
+    # 2) GitHub Release asset (backup)
+    $Zip = Join-Path $env:TEMP "recthew_whisper_$Size.zip"
+    try {
+        Invoke-WebRequest -Uri "$ReleaseBase/whisper-$Size.zip" -OutFile $Zip -UseBasicParsing
+        Expand-Archive -Path $Zip -DestinationPath $Snap -Force
+        Remove-Item $Zip -Force -ErrorAction SilentlyContinue
+        if ((Test-Path $Bin) -and ((Get-Item $Bin).Length -ge $MinBytes)) {
+            Write-Ok "Whisper $Size ready (Release)"; return
+        }
+    } catch { Write-Warn "Whisper $Size Release fetch failed: $($_.Exception.Message)" }
+    Write-Warn "Whisper $Size not fetched (non-critical). The app will download it on first use."
+}
+
+Fetch-Whisper "base"  100000000
+Fetch-Whisper "small" 350000000
+
 Set-Content -LiteralPath $ReadyMarker -Value (Get-Date -Format o) -Encoding ascii
 Write-Ok "Environment is ready"
 
@@ -332,6 +371,6 @@ Write-Host "  To start RecTheWord:" -ForegroundColor White
 Write-Host "    Double-click start.bat" -ForegroundColor Yellow
 Write-Host "    or run: .venv\Scripts\python.exe main.py" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  Larger models (Fun-ASR-Nano, Whisper medium/large) download on demand from ModelScope." -ForegroundColor White
+Write-Host "  Larger models (Fun-ASR-Nano, Whisper medium/large) download on demand (ModelScope / HF mirror)." -ForegroundColor White
 Write-Host ""
 Read-Host "Press Enter to exit"

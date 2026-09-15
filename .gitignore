@@ -39,3 +39,6 @@ Thumbs.db
 
 # agent state
 .dsh-state.md
+
+# local model staging (zips prepared for GitHub Release upload)
+_dl/
