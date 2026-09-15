@@ -882,7 +882,7 @@ class DragHandle(QWidget):
 class SubtitleOverlay(QWidget):
     """Chat-style overlay window for displaying live transcription."""
 
-    add_message_signal = pyqtSignal(int, str, str, str, float)
+    add_message_signal = pyqtSignal(int, str, str, str, float, str)
     update_translation_signal = pyqtSignal(int, str, float)
     update_streaming_signal = pyqtSignal(int, str)
     clear_signal = pyqtSignal()
@@ -916,6 +916,7 @@ class SubtitleOverlay(QWidget):
         self._pos_save_timer.setInterval(500)
         self._pos_save_timer.timeout.connect(lambda: self.position_changed.emit())
         self._last_saved_geo = None
+        self._lane_of_msg = {}  # msg_id -> "sys"|"mic"
         self._setup_ui()
 
         self.add_message_signal.connect(self._on_add_message)
@@ -1000,12 +1001,54 @@ class SubtitleOverlay(QWidget):
             }
         """)
 
+        # Dual-lane message area: top = 🔊 system audio (other people),
+        # bottom = 🎤 microphone (self). Each lane scrolls independently.
         self._msg_container = QWidget()
         self._msg_container.setStyleSheet("background: transparent;")
-        self._msg_layout = QVBoxLayout(self._msg_container)
-        self._msg_layout.setContentsMargins(0, 0, 0, 0)
-        self._msg_layout.setSpacing(2)
-        self._msg_layout.addStretch()
+        self._msg_split = QVBoxLayout(self._msg_container)
+        self._msg_split.setContentsMargins(0, 0, 0, 0)
+        self._msg_split.setSpacing(4)
+
+        def _lane_box(title: str) -> tuple:
+            box = QWidget()
+            box.setStyleSheet("background: transparent;")
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(2)
+            label = QLabel(title)
+            label.setStyleSheet(
+                "color: #8ab; font-weight: bold; font-size: 10pt; "
+                "background: transparent; padding-left: 4px;"
+            )
+            lay.addWidget(label)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
+            scroll.setVerticalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            )
+            scroll.setStyleSheet(
+                "QScrollArea { border: none; background: transparent; }"
+            )
+            inner = QWidget()
+            inner.setStyleSheet("background: transparent;")
+            ilay = QVBoxLayout(inner)
+            ilay.setContentsMargins(0, 0, 0, 0)
+            ilay.setSpacing(2)
+            ilay.addStretch()
+            scroll.setWidget(inner)
+            lay.addWidget(scroll, 1)
+            return scroll, ilay
+
+        self._sys_scroll, self._sys_layout = _lane_box("🔊 对方 (系统音频)")
+        self._mic_scroll, self._mic_layout = _lane_box("🎤 自己 (麦克风)")
+        self._msg_layout = self._sys_layout  # back-compat alias
+        self._msg_scrolls = (self._sys_scroll, self._mic_scroll)
+
+        self._msg_split.addWidget(self._sys_scroll, 1)
+        self._msg_split.addWidget(self._mic_scroll, 1)
 
         self._scroll.setWidget(self._msg_container)
         container_layout.addWidget(self._scroll)
@@ -1145,25 +1188,35 @@ class SubtitleOverlay(QWidget):
         self._monitor.update_asr_device(device)
 
     @pyqtSlot(int, str, str, str, float)
-    def _on_add_message(self, msg_id, timestamp, original, source_lang, asr_ms):
+    def _on_add_message(self, msg_id, timestamp, original, source_lang, asr_ms,
+                        lane="sys"):
         msg = ChatMessage(msg_id, timestamp, original, source_lang, asr_ms)
         self._messages[msg_id] = msg
-        self._msg_layout.addWidget(msg)
+        self._lane_of_msg[msg_id] = lane
+        layout = self._mic_layout if lane == "mic" else self._sys_layout
+        layout.addWidget(msg)
 
-        if len(self._messages) > self._max_messages:
-            oldest_id = min(self._messages.keys())
-            old_msg = self._messages.pop(oldest_id)
-            self._msg_layout.removeWidget(old_msg)
+        # Evict oldest beyond the per-lane cap
+        lane_msgs = [
+            (mid, m) for mid, m in self._messages.items()
+            if self._lane_of_msg.get(mid) == lane
+        ]
+        if len(lane_msgs) > self._max_messages:
+            oldest_id, old_msg = lane_msgs[0]
+            self._messages.pop(oldest_id, None)
+            self._lane_of_msg.pop(oldest_id, None)
+            layout.removeWidget(old_msg)
             old_msg.deleteLater()
 
-        QTimer.singleShot(50, self._scroll_to_bottom)
+        QTimer.singleShot(50, self._scroll_lane, lane)
 
     @pyqtSlot(int, str, float)
     def _on_update_translation(self, msg_id, translated, translate_ms):
         msg = self._messages.get(msg_id)
         if msg:
             msg.set_translation(translated, translate_ms)
-            QTimer.singleShot(50, self._scroll_to_bottom)
+            lane = self._lane_of_msg.get(msg_id, "sys")
+            QTimer.singleShot(50, self._scroll_lane, lane)
 
     def _on_update_streaming(self, msg_id, partial_text):
         msg = self._messages.get(msg_id)
@@ -1173,14 +1226,20 @@ class SubtitleOverlay(QWidget):
     @pyqtSlot()
     def _on_clear(self):
         for msg in self._messages.values():
-            self._msg_layout.removeWidget(msg)
+            lane = self._lane_of_msg.get(getattr(msg, "msg_id", None), "sys")
+            layout = self._mic_layout if lane == "mic" else self._sys_layout
+            layout.removeWidget(msg)
             msg.deleteLater()
         self._messages.clear()
+        self._lane_of_msg.clear()
 
-    def _scroll_to_bottom(self):
+    def _scroll_lane(self, lane="sys"):
         if not self._handle.auto_scroll:
             return
-        sb = self._scroll.verticalScrollBar()
+        scroll = (
+            self._mic_scroll if lane == "mic" else self._sys_scroll
+        )
+        sb = scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def apply_style(self, style: dict):
@@ -1253,8 +1312,11 @@ class SubtitleOverlay(QWidget):
             )
 
     # Thread-safe public API
-    def add_message(self, msg_id, timestamp, original, source_lang, asr_ms):
-        self.add_message_signal.emit(msg_id, timestamp, original, source_lang, asr_ms)
+    def add_message(self, msg_id, timestamp, original, source_lang, asr_ms,
+                    lane="sys"):
+        self.add_message_signal.emit(
+            msg_id, timestamp, original, source_lang, asr_ms, lane
+        )
 
     def update_translation(self, msg_id, translated, translate_ms):
         self.update_translation_signal.emit(msg_id, translated, translate_ms)

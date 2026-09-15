@@ -62,7 +62,8 @@ class AudioCapture:
     def __init__(self, device=None, sample_rate=16000, chunk_duration=0.5):
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
-        self.audio_queue = queue.Queue(maxsize=100)
+        self.audio_queue = queue.Queue(maxsize=100)  # system audio (loopback) lane
+        self.mic_queue = queue.Queue(maxsize=100)  # microphone lane (separate)
         self._stream = None
         self._running = False
         self._device_name = device
@@ -289,6 +290,11 @@ class AudioCapture:
                             self.audio_queue.get_nowait()
                         except queue.Empty:
                             break
+                    while not self.mic_queue.empty():
+                        try:
+                            self.mic_queue.get_nowait()
+                        except queue.Empty:
+                            break
                     log.info(f"Audio capture restarted on: {self._current_device_name}")
                 except Exception as e:
                     log.error(f"Restart after device change failed: {e}")
@@ -368,7 +374,7 @@ class AudioCapture:
                         time.sleep(1)
                     continue
 
-            # Drain all available mic data into buffer
+            # Drain all available mic data into the separate mic lane (no mixing)
             if self._mic_stream:
                 try:
                     avail = self._mic_stream.get_read_available()
@@ -383,30 +389,26 @@ class AudioCapture:
                 except Exception as e:
                     log.warning(f"Mic read error: {e}")
 
+                # Emit whole mic chunks (native cadence) on the mic lane
+                want = int(self.sample_rate * self.chunk_duration)
+                while len(self._mic_buf) >= want:
+                    chunk = self._mic_buf[:want]
+                    self._mic_buf = self._mic_buf[want:]
+                    try:
+                        self.mic_queue.put_nowait(chunk)
+                    except queue.Full:
+                        self.mic_queue.get_nowait()
+                        self.mic_queue.put_nowait(chunk)
+
             if loopback_audio is None:
                 time.sleep(0.005)
                 continue
 
-            # Mix: take matching length from mic buffer
-            audio = loopback_audio
-            mic_rms = None
-            if len(self._mic_buf) > 0:
-                n = len(loopback_audio)
-                if len(self._mic_buf) >= n:
-                    mic_chunk = self._mic_buf[:n]
-                    self._mic_buf = self._mic_buf[n:]
-                else:
-                    mic_chunk = np.zeros(n, dtype=np.float32)
-                    mic_chunk[: len(self._mic_buf)] = self._mic_buf
-                    self._mic_buf = np.array([], dtype=np.float32)
-                mic_rms = float(np.sqrt(np.mean(mic_chunk**2)))
-                audio = loopback_audio + mic_chunk
-
             try:
-                self.audio_queue.put_nowait((audio, mic_rms))
+                self.audio_queue.put_nowait(loopback_audio)
             except queue.Full:
                 self.audio_queue.get_nowait()
-                self.audio_queue.put_nowait((audio, mic_rms))
+                self.audio_queue.put_nowait(loopback_audio)
 
     def start(self):
         self._loopback_disabled = self._device_name == "__disabled__"
@@ -433,8 +435,16 @@ class AudioCapture:
         log.info("Audio capture stopped")
 
     def get_audio(self, timeout=1.0):
+        """Get the next system-audio (loopback) chunk, or None on timeout."""
         try:
             return self.audio_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def get_mic_audio(self, timeout=1.0):
+        """Get the next microphone chunk (separate lane), or None on timeout."""
+        try:
+            return self.mic_queue.get(timeout=timeout)
         except queue.Empty:
             return None
 

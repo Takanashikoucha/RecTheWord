@@ -3,6 +3,8 @@
 audio:
   # WASAPI loopback device name (null = default output device)
   device: null
+  # Microphone device name (null/"__default__" = system default input)
+  mic_device: "__default__"
   # Sample rate for capture
   sample_rate: 16000
   # Audio chunk duration in seconds for VAD processing (32ms = Silero VAD native window)
@@ -49,6 +51,8 @@ translation:
   temperature: 0.3
   # Enable streaming output
   streaming: true
+  # Mic-lane (self) translation target; empty = no translation for the mic lane
+  mic_target_language: ""
   # System prompt template ({source_lang}, {target_lang}, {context} will be replaced)
   system_prompt: |
     你是一个专业的影视字幕翻译专家。请将以下{source_lang}对话翻译为{target_lang}。
