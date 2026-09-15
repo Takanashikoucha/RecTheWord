@@ -11,12 +11,16 @@ venv/
 # App data (never commit)
 models/
 recordings/
+sessions/
+transcripts/
+logs/
+user_settings.json
 config.json
 *.wav
 *.mp3
 
-# Vendored binaries
-vendor/ffmpeg/
+# Legacy (superseded by LiveTranslate base)
+_legacy_*/
 
 # Editors / OS
 .idea/
@@ -27,3 +31,6 @@ Thumbs.db
 # test / local venv
 .pytest_cache/
 .venvtest/
+
+# agent state
+.dsh-state.md
