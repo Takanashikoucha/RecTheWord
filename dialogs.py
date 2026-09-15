@@ -126,7 +126,7 @@ class _ModelLoadDialog(QDialog):
 
     def __init__(self, message, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("LiveTranslate")
+        self.setWindowTitle("RecTheWord")
         self.setMinimumWidth(500)
         self.setMinimumHeight(300)
         self.setModal(True)

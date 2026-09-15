@@ -33,7 +33,7 @@ faster-whisper/FunASR ASR worker → OpenAI 兼容流式翻译 → PyQt6 透明 
 ## 安装与运行
 
 ```bat
-:: 一次性安装（建虚拟环境 + 装依赖 + 检测 GPU）
+:: 一次性安装（建虚拟环境 + 装依赖 + 检测 GPU + 从 ModelScope 预取轻量 ASR 模型）
 install.bat
 
 :: 启动
@@ -42,8 +42,14 @@ start.bat
 .venv\Scripts\python.exe main.py
 ```
 
-首次启动走 SetupWizard（选 ModelScope / HuggingFace 源 + 缓存路径 + 下载模型），
-随后在设置里配置翻译/纪要 API（任意 OpenAI 兼容端点）。
+`install.bat` 会从 **ModelScope** 预取默认的轻量 ASR 模型（SenseVoice-Small，
+约 900MB），因此装完环境即可直接运行、首次启动无需再下载模型。
+更大的模型（Fun-ASR-Nano、Whisper medium/large 等）由应用在设置里按需从
+ModelScope 下载。首次启动还会走 SetupWizard 配置翻译/纪要 API（任意 OpenAI
+兼容端点）。
+
+> 注：模型不内嵌在 git 仓库（GitHub 单文件上限 100MB），而是安装时从
+> ModelScope 拉取——这保持了仓库小巧、可用普通 git 分发，同时实现开箱即用。
 
 ### 手动安装
 

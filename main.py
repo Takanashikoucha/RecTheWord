@@ -1,6 +1,7 @@
 """
-LiveTranslate - Phase 0 Prototype
-Real-time audio translation using WASAPI loopback + faster-whisper + LLM.
+RecTheWord - Meeting real-time translation + recording + AI minutes.
+Dual-lane (microphone + system loopback) ASR/translation with a transparent
+overlay, built on the LiveTranslate pipeline (WASAPI loopback + VAD + ASR worker).
 """
 
 import sys
@@ -863,6 +864,20 @@ class LiveTranslateApp:
             engine_type, settings.get("funasr_model", self._funasr_model_key)
         )
         device = settings.get("asr_device", self._asr_device)
+        # Guard: fall back to CPU when CUDA is requested but unavailable
+        # (office PCs without a GPU). Avoids a hard worker-load failure.
+        if str(device).startswith("cuda"):
+            try:
+                import torch
+
+                if not torch.cuda.is_available():
+                    log.warning(
+                        f"CUDA device '{device}' requested but unavailable; "
+                        "falling back to cpu"
+                    )
+                    device = "cpu"
+            except Exception:  # noqa: BLE001
+                pass
         hub = "ms"
         download_proxy = "system"
         if self._panel:
@@ -1890,7 +1905,7 @@ class LiveTranslateApp:
 
 def main():
     setup_logging()
-    log.info("LiveTranslate starting...")
+    log.info("RecTheWord starting...")
     config = load_config()
     config.setdefault("asr", {})
     config["asr"].setdefault("asr_engine", "funasr")
@@ -2095,7 +2110,7 @@ def main():
             if not _hide_notified[0]:
                 _hide_notified[0] = True
                 tray.showMessage(
-                    "LiveTranslate",
+                    "RecTheWord",
                     t("hide_tray_hint"),
                     QSystemTrayIcon.MessageIcon.Information,
                     3000,
@@ -2147,7 +2162,7 @@ def main():
             if not _subwin_notified[0]:
                 _subwin_notified[0] = True
                 tray.showMessage(
-                    "LiveTranslate",
+                    "RecTheWord",
                     t("subwin_drag_hint"),
                     QSystemTrayIcon.MessageIcon.Information,
                     3000,

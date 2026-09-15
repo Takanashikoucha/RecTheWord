@@ -1398,7 +1398,7 @@ class ControlPanel(QWidget):
 
         QMessageBox.information(
             self,
-            "LiveTranslate",
+            "RecTheWord",
             "Language changed. Please restart the application.\n"
             "语言已更改，请重启应用程序。",
         )

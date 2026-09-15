@@ -552,7 +552,7 @@ class SubtitleWindow(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setWindowTitle("LiveTranslate Subtitle")
+        self.setWindowTitle("RecTheWord Subtitle")
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 

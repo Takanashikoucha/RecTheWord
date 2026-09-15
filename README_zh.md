@@ -1,152 +1,110 @@
-# LiveTranslate
+# RecTheWord
+
+**会议场景的双向实时翻译 + 录音 + AI 会议纪要**桌面应用（Windows，CPU 即可）。
 
 [English](README.md) | **中文**
 
-Windows 实时音频翻译工具。捕获系统音频（WASAPI loopback）和可选的麦克风输入，语音识别后调用 LLM API 翻译，结果显示在透明悬浮字幕窗口上。
+基于 [LiveTranslate](https://github.com/TheDeathDragon/LiveTranslate)（MIT）改造，
+保留其已验证的 Windows 链路，叠加会议差异化能力。
 
-适用于看外语视频、直播、语音对话等场景——无需修改播放器，全局音频捕获即开即用。
+## 功能一览
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
-![Windows](https://img.shields.io/badge/Platform-Windows-0078d4)
-![License](https://img.shields.io/badge/License-MIT-green)
+| 能力 | 说明 |
+|---|---|
+| 双路实时识别 | 麦克风（🎤 自己）与系统音频回环（🔊 对方）各自独立 VAD + ASR，双栏分列显示 |
+| 两级显示 | interim 中间结果近零延迟上屏（灰色），整句 final 原位替换（定色） |
+| 三语识别 | 中 / 日 / 英自动语种检测（SenseVoice / Whisper 多语模型） |
+| 双向翻译 | 对方→中文（默认开）；自己→目标语（可配，如中→英） |
+| 全程录音 | 停止时落盘 `mix.wav` + `mic.wav` + `sys.wav` |
+| 文字流记录 | 每句 `{时间戳, 路, 语种, 原文, 译文}` 写入 `transcript.jsonl` |
+| 会话管理 | 每次录制 = 一个会话；托盘菜单可打开历史会话、补做精修/纪要、删除 |
+| 离线精修（手动） | 停止后默认不自动执行；手动跑说话人分离得带说话人+时间戳全量稿 |
+| 说话人标注 | 精修稿中把「说话人N」改为真实姓名（可编辑、持久化） |
+| 会议纪要（手动） | 二选一输入源（离线精修稿 / 实时文字流）→ AI 生成 Markdown |
+| 远程 ASR | 本地 CPU 不够时把识别卸载到 GPU 机器（见 [REMOTE_ASR.md](REMOTE_ASR.md)） |
 
-## 截图
+## 开箱即用
 
-![LiveTranslate](screenshot/zh.png)
+`install.bat` 安装时会从 **ModelScope** 预取默认的轻量 ASR 模型
+（SenseVoice-Small，约 900MB），因此装完环境即可直接运行、首次启动无需再
+下载模型。更大的模型（Fun-ASR-Nano、Whisper medium/large 等）由应用按需从
+ModelScope 下载（设置里可切换）。
 
-## 安装视频
-
-[![安装演示](https://img.shields.io/badge/Bilibili-安装演示-00A1D6?logo=bilibili)](https://www.bilibili.com/video/BV1K2Awz6Euw) 适用于看外语视频、直播、ASMR等场景，也可以语音输入实时并行翻译多种语音
-
-## 功能特性
-
-- **实时翻译管线**：系统音频 → VAD → ASR → LLM 翻译 → 字幕显示
-- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper
-- **远程 ASR**：通过 HTTP 把语音识别放到 GPU 机器上跑 —— 见 [REMOTE_ASR.md](REMOTE_ASR.md)
-- **兼容任意 OpenAI 格式 API**：DeepSeek、Grok、Qwen、GPT、Ollama、vLLM 等
-- **流式翻译显示**：翻译结果逐字实时显示
-- **模型独立配置**：流式传输、结构化输出(JSON)、上下文历史、禁用思考
-- **麦克风混音**：可选将麦克风输入混合到系统音频一起识别
-- **低延迟 VAD**：32ms 音频块 + Silero VAD，自适应静音检测
-- **透明悬浮窗**：始终置顶、鼠标穿透、可拖拽，14 种配色主题
-- **CUDA 加速**：ASR 模型 GPU 推理
-- **模型自动管理**：首次启动向导，支持 ModelScope / HuggingFace 双源
-- **内置基准测试**：对比翻译模型速度和质量
-
-## 更新日志
-
-查看 [中文更新日志](i18n/CHANGELOG_zh.md) | [English Changelog](i18n/CHANGELOG_en.md)
+> 注：模型不内嵌在 git 仓库（GitHub 单文件上限 100MB），而是安装时从
+> ModelScope 拉取——这保持了仓库小巧、可用普通 git 分发，同时实现开箱即用。
 
 ## 系统要求
 
-- **操作系统**：Windows 10/11
-- **Python**：3.10–3.12（绿色版免装）
-- **GPU**（推荐）：NVIDIA 显卡 + CUDA 12.6（RTX 50 系列等 Blackwell 架构需要 CUDA 12.8）
-- **网络**：需要访问翻译 API
+- Windows 10 / 11 x64
+- Python 3.10 – 3.12
+- CPU 即可（无 GPU 要求；GPU 可选加速）
 
-## 快速开始
+## 安装与运行
 
-### 绿色版（免装 Python，推荐新手）
+```bat
+:: 一次性安装（建虚拟环境 + 装依赖 + 检测 GPU）
+install.bat
 
-从 [Releases](https://github.com/TheDeathDragon/LiveTranslate/releases) 下载 `LiveTranslate-portable-*.zip`，解压后双击 **`start.bat`** 即可。首次运行会自动下载便携版 Python 3.12 并按显卡安装依赖，无需预装任何 Python。
-
-### 从源码安装
-
-```bash
-git clone https://github.com/TheDeathDragon/LiveTranslate.git
-cd LiveTranslate
-```
-
-双击 **`install.bat`** 一键安装——脚本会自动：
-1. 检测 Python 3.10–3.12（未安装则通过 winget 自动安装）
-2. 创建虚拟环境
-3. 检测 NVIDIA 显卡，选择 CUDA / CPU 版 PyTorch
-4. 安装全部依赖
-
-安装完成后双击 **`start.bat`** 启动。
-
-更新时双击 **`update.bat`**——自动拉取最新代码并更新依赖（未安装 Git 会通过 winget 自动安装）。
-
-<details>
-<summary>手动安装</summary>
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-
-# PyTorch（三选一）
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA（RTX 50 系列）
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # 仅 CPU
-
-# 依赖
-pip install -r requirements.txt
-
-# 启动
+:: 启动
+start.bat
+:: 或
 .venv\Scripts\python.exe main.py
 ```
 
-</details>
+首次启动走 SetupWizard（选下载源 + 配置翻译 API），随后即可开始会议录制。
 
-## 首次使用
+### 手动安装
 
-1. 弹出设置向导——选择下载源（ModelScope 适合国内，HuggingFace 适合海外）和缓存路径
-2. 自动下载 Silero VAD + SenseVoice 模型（约 1GB）
-3. 下载完成后进入主界面
-
-## 配置翻译 API
-
-设置 → 翻译标签页：
-
-| 参数 | 示例 |
-|------|------|
-| API Base | `https://api.deepseek.com/v1` |
-| API Key | 你的密钥 |
-| Model | `deepseek-chat` |
-| 代理 | `none` / `system` / 自定义地址 |
-
-## 架构
-
-```
-Audio (WASAPI 32ms) → VAD (Silero) → ASR → LLM Translation → Overlay
-         ↑ 可选麦克风混音
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+.venv\Scripts\python.exe main.py
 ```
 
+## 使用流程
+
+1. 启动后在托盘菜单 / 设置里选择**扬声器（回环）**与**麦克风**设备。
+2. 点 **开始**：透明 overlay 出现双栏实时字幕——上栏 🔊 对方（原文+→中文译文），
+   下栏 🎤 自己（原文+可选→目标语译文）。
+3. 点 **停止**：会话自动归档（3 个 WAV + 文字流 + 元数据），**此后零后台计算**。
+4. 托盘菜单「**会议会话管理**」→ 选中会话：
+   - **离线精修**：手动跑说话人分离；
+   - 精修完成后可编辑**说话人姓名**；
+   - **生成纪要**：选「离线精修稿」或「实时文字流」→ AI 生成 Markdown → 可导出。
+
+## 会话存储布局
+
 ```
-main.py                 主入口，管线编排
-├── audio_capture.py    WASAPI loopback + 麦克风混音
-├── vad_processor.py    Silero VAD
-├── asr_engine.py       faster-whisper 后端
-├── asr_funasr.py       统一 FunASR 模型选择后端
-├── asr_sensevoice.py   SenseVoice 后端
-├── asr_funasr_nano.py  FunASR Nano 后端
-├── asr_anime_whisper.py Anime-Whisper 后端 (日语动画/Galgame)
-├── asr_remote.py        远程 Whisper 客户端 (→ asr_server.py, 见 REMOTE_ASR.md)
-├── translator.py       OpenAI 兼容翻译客户端 (流式/JSON/上下文)
-├── model_manager.py    模型下载与缓存管理
-├── subtitle_overlay.py PyQt6 透明悬浮窗
-├── control_panel.py    设置面板 UI (7 个标签页)
-├── dialogs.py          设置向导、下载、模型配置对话框
-└── benchmark.py        翻译基准测试
+~/.rectheword/sessions/
+  index.json                          # 会话索引
+  <YYYYMMDD-HHMMSS>/
+    meta.json       # 设备 / ASR 后端 / 翻译配置快照
+    mix.wav / mic.wav / sys.wav
+    transcript.jsonl
+    refined.json    # （手动精修后）
+    labels.json     # 说话人姓名映射
+    minutes.md      # （手动生成后）
 ```
 
-## 致谢
+## 内存预算（16G 机器）
 
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — 基于 CTranslate2 的 Whisper 推理
-- [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
-- [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — 日语动画/Galgame 专用 ASR
-- [Silero VAD](https://github.com/snakers4/silero-vad) — 语音活动检测
+| 组件 | 估算 |
+|---|---|
+| PyQt6 + 应用 | ~0.5GB |
+| SenseVoice-Small（CPU int8，两路共享单 worker） | ~1GB |
+| Silero VAD ×2 | ~0.2GB |
+| PyAudioWPatch 采集 | ~0.2GB |
+| **实时运行态合计** | **~2GB** |
+| 离线精修（手动触发时才懒加载） | 峰值 ~5GB |
 
-## Star History
+## 测试
 
-<a href="https://www.star-history.com/?repos=TheDeathDragon%2FLiveTranslate&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=TheDeathDragon/LiveTranslate&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=TheDeathDragon/LiveTranslate&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=TheDeathDragon/LiveTranslate&type=date&legend=top-left" />
- </picture>
-</a>
+```bat
+.venv\Scripts\python.exe -m pytest tests/ -q
+```
 
-## 许可证
+## 许可
 
-[MIT License](LICENSE)
+软件代码 MIT（源自 LiveTranslate，保留署名）；模型权重许可见各自模型卡。

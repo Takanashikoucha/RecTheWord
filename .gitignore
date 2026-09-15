@@ -8,8 +8,12 @@ dist/
 .venv/
 venv/
 
-# App data (never commit)
+# Model caches (downloaded at install/runtime from ModelScope) — never commit.
+# The lightweight SenseVoice-Small is fetched by install.ps1 (step 7) so the
+# repo stays small enough for plain git (GitHub 100MB/file limit).
 models/
+
+# App data (never commit)
 recordings/
 sessions/
 transcripts/

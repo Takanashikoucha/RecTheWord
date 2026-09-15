@@ -3,7 +3,7 @@ cd /d "%~dp0"
 set PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%
 
 echo ========================================
-echo   LiveTranslate Updater
+echo   RecTheWord Updater
 echo ========================================
 echo.
 

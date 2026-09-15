@@ -30,7 +30,7 @@ target_label: "目标:"
 source_label: "来源:"
 
 # 控制面板
-window_control_panel: "LiveTranslate - 控制面板"
+window_control_panel: "RecTheWord - 控制面板"
 tab_vad_asr: "VAD / ASR"
 tab_translation: "翻译"
 tab_benchmark: "基准测试"
@@ -141,7 +141,7 @@ btn_test_all: "测试全部模型"
 testing: "测试中..."
 
 # 缓存标签页
-mem_warning_msg: "内存占用 {rss}MB 超过阈值, 建议重启 LiveTranslate 释放 ASR 引擎的累积缓存"
+mem_warning_msg: "内存占用 {rss}MB 超过阈值, 建议重启 RecTheWord 释放 ASR 引擎的累积缓存"
 group_transcript: "转录持久化"
 label_auto_save_transcript: "自动保存识别结果到 transcripts/ 文件夹"
 auto_save_transcript_tooltip: "每次会话开启时新建 3 份文件 (原文/译文/全部), 实时追加写入, 不受悬浮窗 50 条上限影响"
@@ -168,7 +168,7 @@ dialog_delete_msg: >-
   是否继续？
 
 # 对话框
-window_setup: "LiveTranslate - 初始设置"
+window_setup: "RecTheWord - 初始设置"
 group_download_source: "模型下载源"
 group_download_proxy: "下载代理"
 hub_modelscope_full: "ModelScope (国内)"
@@ -179,7 +179,7 @@ download_failed: "下载失败: {error}"
 download_complete: "下载完成！"
 setup_api_hint: "模型下载完成！接下来请配置翻译 API。\n\n需要填写 API 地址、密钥和模型名称。\n推荐使用 DeepSeek（便宜好用）。"
 setup_api_title: "配置翻译 API"
-window_download: "LiveTranslate - 下载模型"
+window_download: "RecTheWord - 下载模型"
 downloading_models: "正在下载所需模型: {names}"
 btn_close: "关闭"
 dialog_edit_model: "编辑模型"
@@ -237,11 +237,11 @@ asr_restore_succeeded: "已恢复上一个 ASR worker。"
 asr_restore_failed: "恢复上一个 ASR worker 也失败: {error}"
 
 # 日志窗口
-window_log: "LiveTranslate - 日志"
+window_log: "RecTheWord - 日志"
 show_debug: "显示 DEBUG"
 
 # 系统托盘
-tray_tooltip: "LiveTranslate - 实时翻译"
+tray_tooltip: "RecTheWord - 会议实时翻译"
 tray_start: "启动"
 tray_stop: "停止"
 tray_pause: "暂停"

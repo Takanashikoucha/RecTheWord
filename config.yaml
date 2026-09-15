@@ -17,10 +17,11 @@ asr:
   model_size: "medium"
   # FunASR model: sensevoice-small, funasr-nano-2512, funasr-mlt-nano-2512
   funasr_model: "sensevoice-small"
-  # Device: cuda or cpu
-  device: "cuda"
-  # Compute type: float16, int8_float16, int8
-  compute_type: "float16"
+  # Device: cuda or cpu (defaults to cpu for office PCs without a GPU;
+  # the app auto-falls-back to cpu when CUDA is unavailable)
+  device: "cpu"
+  # Compute type: float16, int8_float16, int8 (cpu uses int8)
+  compute_type: "int8"
   # Language: auto, en, ja, zh, ko, etc.
   language: "auto"
   # Minimum speech duration (seconds) before sending to ASR

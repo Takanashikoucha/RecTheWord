@@ -634,7 +634,7 @@ class DragHandle(QWidget):
         drag_layout.setContentsMargins(0, 0, 4, 0)
         drag_layout.setSpacing(6)
 
-        title = QLabel("\u2630 LiveTranslate")
+        title = QLabel("\u2630 RecTheWord")
         title.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
         title.setStyleSheet("color: #aaa; background: transparent;")
         drag_layout.addWidget(title)
@@ -933,7 +933,7 @@ class SubtitleOverlay(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
         )
-        self.setWindowTitle("LiveTranslate")
+        self.setWindowTitle("RecTheWord")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
@@ -1269,12 +1269,12 @@ class SubtitleOverlay(QWidget):
         mode: "original" | "translation" | "both"
         """
         if not self._messages:
-            QMessageBox.information(parent or self, "LiveTranslate", t("export_empty"))
+            QMessageBox.information(parent or self, "RecTheWord", t("export_empty"))
             return
 
         from datetime import datetime
         suffix = {"original": "original", "translation": "translation", "both": "all"}.get(mode, "all")
-        default_name = f"livetrans_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{suffix}.txt"
+        default_name = f"recthew_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{suffix}.txt"
         path, _ = QFileDialog.getSaveFileName(
             parent or self,
             t("export_dialog_title"),
@@ -1307,7 +1307,7 @@ class SubtitleOverlay(QWidget):
         except OSError as e:
             QMessageBox.critical(
                 parent or self,
-                "LiveTranslate",
+                "RecTheWord",
                 t("export_failed").format(error=str(e)),
             )
 

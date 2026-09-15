@@ -47,7 +47,7 @@ function Enable-SystemProxy {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Magenta
-Write-Host "   LiveTranslate Installer" -ForegroundColor Magenta
+Write-Host "   RecTheWord Installer" -ForegroundColor Magenta
 Write-Host "========================================" -ForegroundColor Magenta
 
 Enable-SystemProxy
@@ -298,6 +298,25 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# ── Step 8: Pre-fetch the lightweight ASR model (SenseVoice-Small, ModelScope) ──
+# Keeps the repo small (plain git, <100MB/file) while staying out-of-the-box:
+# after install, the default ASR model is already local, so first launch needs
+# no model download. Skips silently if already present.
+Write-Step "Pre-fetching SenseVoice-Small from ModelScope (~900MB, skip if present)..."
+
+$ModelDir = Join-Path $ProjectDir "models\modelscope\models\iic--SenseVoiceSmall\snapshots\master"
+$ModelPt  = Join-Path $ModelDir "model.pt"
+if (Test-Path $ModelPt) {
+    Write-Ok "SenseVoice-Small already present, skipping download"
+} else {
+    & $Python -c "import os; os.environ['MODELSCOPE_CACHE']=os.path.abspath(r'models\modelscope'); from modelscope import snapshot_download; snapshot_download(model_id='iic/SenseVoiceSmall', cache_dir=os.path.abspath(r'models\modelscope')); print('model downloaded')"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Model pre-fetch failed (non-critical). The app will download it on first launch instead."
+    } else {
+        Write-Ok "SenseVoice-Small ready"
+    }
+}
+
 Set-Content -LiteralPath $ReadyMarker -Value (Get-Date -Format o) -Encoding ascii
 Write-Ok "Environment is ready"
 
@@ -309,10 +328,10 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host "   Installation complete!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  To start LiveTranslate:" -ForegroundColor White
+Write-Host "  To start RecTheWord:" -ForegroundColor White
 Write-Host "    Double-click start.bat" -ForegroundColor Yellow
 Write-Host "    or run: .venv\Scripts\python.exe main.py" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  First launch will download ASR models (~1GB)." -ForegroundColor White
+Write-Host "  Larger models (Fun-ASR-Nano, Whisper medium/large) download on demand from ModelScope." -ForegroundColor White
 Write-Host ""
 Read-Host "Press Enter to exit"

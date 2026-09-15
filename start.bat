@@ -18,10 +18,10 @@ if not exist ".venv\.livetranslate-ready" (
     exit /b 1
 )
 
-echo Starting LiveTranslate...
+echo Starting RecTheWord...
 .venv\Scripts\python.exe main.py
 if errorlevel 1 (
     echo.
-    echo [ERROR] LiveTranslate exited with an error.
+    echo [ERROR] RecTheWord exited with an error.
     pause
 )
