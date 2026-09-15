@@ -19,7 +19,7 @@ faster-whisper/FunASR ASR worker → OpenAI 兼容流式翻译 → PyQt6 透明 
 | **离线精修（手动）** | 停止后**默认不自动执行**；手动对 `mix.wav` 跑 SenseVoice+VAD+PUNC+CAM++ 说话人分离，得带说话人+时间戳全量稿。 |
 | **说话人标注** | 精修稿中把匿名「说话人N」改为真实姓名（可编辑、持久化、即时刷新）。 |
 | **会议纪要（手动）** | 二选一输入源：**A 离线精修稿**（带说话人）/ **B 实时文字流**（零额外计算），提交 OpenAI 兼容接口生成 Markdown 纪要，可导出。 |
-| **远程 ASR** | 本地 CPU 不够时，把识别卸载到 GPU 机器（`asr_server.py`，见 [REMOTE_ASR.md](REMOTE_ASR.md)）。 |
+| **远程 ASR** | 本地 CPU 不够时，把识别卸载到 GPU 机器（`asr_server.py`）。 |
 
 ---
 
