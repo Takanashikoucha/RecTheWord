@@ -28,9 +28,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from dialogs import available_screen_height, make_scroll_area
-from i18n import t, LANGUAGES
-from subtitle_window import DEFAULT_SUBTITLE_WIN_SETTINGS
+from app.dialogs import available_screen_height, make_scroll_area
+from app.i18n import t, LANGUAGES
+from app.subtitle_window import DEFAULT_SUBTITLE_WIN_SETTINGS
 
 _PROJECT_DIR = Path(__file__).parent
 

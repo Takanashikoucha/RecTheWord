@@ -1,5 +1,5 @@
-import translator as translator_module
-from translator import Translator, resolve_thinking_style, thinking_disable_body
+import app.translator as translator_module
+from app.translator import Translator, resolve_thinking_style, thinking_disable_body
 
 
 class _DummyClient:

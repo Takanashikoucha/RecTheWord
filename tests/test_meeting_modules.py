@@ -13,10 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from _transcript_log import TranscriptLog  # noqa: E402
-from _recorder import Recorder  # noqa: E402
-from _labels import SpeakerLabels  # noqa: E402
-from _sessions import SessionStore  # noqa: E402
+from app._transcript_log import TranscriptLog  # noqa: E402
+from app._recorder import Recorder  # noqa: E402
+from app._labels import SpeakerLabels  # noqa: E402
+from app._sessions import SessionStore  # noqa: E402
 
 
 # ── TranscriptLog ──
@@ -154,7 +154,7 @@ def test_session_index_persistence(tmp_path):
 # ── minutes prompt assembly (mocked client) ──
 
 def test_minutes_prompt_sources(monkeypatch):
-    import _minutes
+    import app._minutes as _minutes
 
     captured = {}
 
@@ -181,7 +181,7 @@ def test_minutes_prompt_sources(monkeypatch):
 
 
 def test_minutes_save(tmp_path):
-    import _minutes
+    import app._minutes as _minutes
 
     p = _minutes.save_minutes(tmp_path, "# 标题\n内容")
     assert p.exists()

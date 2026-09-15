@@ -17,7 +17,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-from model_manager import (
+from app.model_manager import (
     DEFAULT_FUNASR_MODEL,
     apply_cache_env,
     funasr_display_name,
@@ -41,11 +41,11 @@ import os
 # torch must be imported before PyQt6 to avoid DLL conflicts on Windows
 import torch  # noqa: F401
 
-from audio_capture import AudioCapture
-from vad_processor import VADProcessor
-from asr_client import ASRClient, ASRWorkerError, ASRWorkerExited, ASRWorkerTimeout
-from translator import Translator, RepetitionError
-from transcript_writer import TranscriptWriter
+from app.audio_capture import AudioCapture
+from app.vad_processor import VADProcessor
+from app.asr_client import ASRClient, ASRWorkerError, ASRWorkerExited, ASRWorkerTimeout
+from app.translator import Translator, RepetitionError
+from app.transcript_writer import TranscriptWriter
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QMessageBox
 from PyQt6.QtGui import (
@@ -60,21 +60,21 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import QTimer, Qt
 
-from subtitle_overlay import SubtitleOverlay
-from subtitle_window import SubtitleWindow
-from log_window import LogWindow
-from control_panel import (
+from app.subtitle_overlay import SubtitleOverlay
+from app.subtitle_window import SubtitleWindow
+from app.log_window import LogWindow
+from app.control_panel import (
     ControlPanel,
     SETTINGS_FILE,
     _load_saved_settings,
     _save_settings,
 )
-from dialogs import (
+from app.dialogs import (
     SetupWizardDialog,
     ModelDownloadDialog,
     _ModelLoadDialog,
 )
-from i18n import t, set_lang, LANGUAGES, COMMON_LANG_CODES
+from app.i18n import t, set_lang, LANGUAGES, COMMON_LANG_CODES
 
 _NO_PENDING = object()
 
@@ -559,7 +559,7 @@ class LiveTranslateApp:
         self._capture_thread = None
         self._asr_thread = None
         self._tl_executor = ThreadPoolExecutor(max_workers=8)
-        self._session_store = __import__("_sessions").SessionStore()
+        self._session_store = __import__("app._sessions").SessionStore()
 
         self._transcript = TranscriptWriter(Path(__file__).parent / "transcripts")
 
@@ -786,7 +786,7 @@ class LiveTranslateApp:
         worker subprocess (ASRClient); remote-whisper is a thin in-process HTTP client
         that needs no subprocess isolation (no native deps, no GPU model to load)."""
         if config.get("engine_type") == "remote-whisper":
-            from asr_remote import RemoteASREngine
+            from app.asr_remote import RemoteASREngine
 
             url = config.get("remote_asr_url") or "http://127.0.0.1:8765"
             engine = RemoteASREngine(server_url=url)
@@ -817,7 +817,7 @@ class LiveTranslateApp:
         if self._panel:
             settings = self._panel.get_settings()
             settings["target_language"] = lang
-            from control_panel import _save_settings
+            from app.control_panel import _save_settings
 
             _save_settings(settings)
 
@@ -1619,8 +1619,8 @@ class LiveTranslateApp:
         self._running = True
         self._paused = False
         # ── meeting session artifacts (recording / transcript log) ──
-        from _recorder import Recorder
-        from _transcript_log import TranscriptLog
+        from app._recorder import Recorder
+        from app._transcript_log import TranscriptLog
 
         settings = self._panel.get_settings() if self._panel else {}
         session_dir = self._session_store.create(
@@ -1735,8 +1735,8 @@ class LiveTranslateApp:
 
                 with open(rp, "r", encoding="utf-8") as fh:
                     segments = _json.load(fh)
-                from _labels import SpeakerLabels
-                from _minutes import generate_from_segments
+                from app._labels import SpeakerLabels
+                from app._minutes import generate_from_segments
 
                 labels = SpeakerLabels.load(session_dir / "labels.json")
                 return generate_from_segments(api_base, api_key, model, segments, labels)
@@ -1744,7 +1744,7 @@ class LiveTranslateApp:
                 tp = session_dir / "transcript.jsonl"
                 text = ""
                 if tp.exists():
-                    from _transcript_log import TranscriptLog
+                    from app._transcript_log import TranscriptLog
 
                     tl = TranscriptLog(tp)
                     # replay final events + translation patches
@@ -1775,17 +1775,17 @@ class LiveTranslateApp:
                             line_out += f"\n    -> {ev['translated']}"
                         lines.append(line_out)
                     text = "\n".join(lines)
-                from _minutes import generate_from_text_stream
+                from app._minutes import generate_from_text_stream
 
                 return generate_from_text_stream(api_base, api_key, model, text)
         return _fn
 
     def run_offline_refine(self, session_id: str, progress_cb=None):
         """Blocking offline diarization for a session's mix.wav (call off-UI)."""
-        from _offline_diarize import diarize_wav
+        from app._offline_diarize import diarize_wav
         import json as _json
 
-        store = self._session_store or __import__("_sessions").SessionStore()
+        store = self._session_store or __import__("app._sessions").SessionStore()
         d = store.path(session_id)
         mix = d / "mix.wav"
         if not mix.exists():
@@ -1801,10 +1801,10 @@ class LiveTranslateApp:
         """Open the refined-view dialog (speaker renaming + minutes) for a session."""
         import json as _json
 
-        from _labels import SpeakerLabels
-        from _refine_view import RefineViewDialog
+        from app._labels import SpeakerLabels
+        from app._refine_view import RefineViewDialog
 
-        store = self._session_store or __import__("_sessions").SessionStore()
+        store = self._session_store or __import__("app._sessions").SessionStore()
         d = store.path(session_id)
         rp = d / "refined.json"
         if not rp.exists():
@@ -1958,7 +1958,7 @@ def main():
         log.info("Setup wizard completed")
 
         # Prompt user to configure translation API
-        from dialogs import ModelEditDialog
+        from app.dialogs import ModelEditDialog
 
         info = QMessageBox(
             QMessageBox.Icon.Information,
@@ -2265,7 +2265,7 @@ def main():
     menu.addAction(log_action)
 
     # --- Meeting sessions (store bound at app init) ---
-    from _session_ui import SessionWindow
+    from app._session_ui import SessionWindow
 
     sessions_win = SessionWindow(None, live_trans._session_store)
     sessions_win.refine_requested.connect(
@@ -2345,7 +2345,7 @@ def main():
     def _on_tray_model_switch(index):
         models = panel.get_settings().get("models", [])
         if 0 <= index < len(models):
-            from control_panel import _save_settings
+            from app.control_panel import _save_settings
 
             settings = panel.get_settings()
             settings["active_model"] = index
@@ -2358,7 +2358,7 @@ def main():
     def on_overlay_model_switch(index):
         models = panel.get_settings().get("models", [])
         if 0 <= index < len(models):
-            from control_panel import _save_settings
+            from app.control_panel import _save_settings
 
             settings = panel.get_settings()
             settings["active_model"] = index
@@ -2399,7 +2399,7 @@ def main():
     def _on_tray_lang_switch(lang_code):
         overlay.set_target_language(lang_code)
         live_trans._on_target_language_changed(lang_code)
-        from control_panel import _save_settings
+        from app.control_panel import _save_settings
 
         settings = panel.get_settings()
         settings["target_language"] = lang_code
@@ -2440,7 +2440,7 @@ def main():
         _asr_lang_actions[current_asr_lang].setChecked(True)
 
     def _on_tray_asr_lang(code):
-        from control_panel import _save_settings
+        from app.control_panel import _save_settings
 
         live_trans._set_asr_language(code)
         settings = panel.get_settings()

@@ -21,6 +21,27 @@ git. `install.ps1` pre-fetches them so the app is out-of-the-box after install:
 Larger models (Fun-ASR-Nano, Whisper medium/large) download on demand from
 ModelScope / the HF mirror.
 
+## Layout
+
+```
+main.py            # thin top-level entry (imports the app package)
+app/               # all application modules (package)
+  ├── main logic modules (audio_capture, vad_processor, asr_*, translator, ...)
+  ├── UI modules (subtitle_overlay, control_panel, dialogs, log_window, ...)
+  ├── meeting modules (_recorder, _sessions, _minutes, _labels, _offline_diarize, ...)
+  ├── i18n.py + i18n/   (UI strings)
+  └── funasr_nano/      (vendored nano model code)
+config.yaml        # base defaults (anchored to repo root, next to main.py)
+requirements.txt
+install.ps1 / start.bat / update.bat / build_release.ps1
+tests/
+```
+
+Runtime resources anchor to their owning file's directory: `config.yaml` and
+`logs/`/`transcripts/` to the repo root (next to `main.py`); `i18n/`,
+`user_settings.json`, `models/` to `app/` (via `model_manager.APP_DIR`, which
+resolves to the repo root for `models/`).
+
 ## Running
 
 ```bash
@@ -28,7 +49,7 @@ ModelScope / the HF mirror.
 .venv/Scripts/python.exe main.py
 ```
 
-Lint: `python -m ruff check --select F,E,W --ignore E501,E402 *.py`
+Lint: `python -m ruff check --select F,E,W --ignore E501,E402 main.py app/*.py`
 (E402 ignored because `main.py` imports torch before PyQt6).
 
 Tests: `.venv/Scripts/python.exe -m pytest tests/ -q` (needs numpy/pytest;

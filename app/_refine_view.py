@@ -109,7 +109,7 @@ class RefineViewDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "生成失败", str(e))
             return
-        from _minutes import save_minutes
+        from app._minutes import save_minutes
 
         save_minutes(self.session_dir, md)
         QMessageBox.information(

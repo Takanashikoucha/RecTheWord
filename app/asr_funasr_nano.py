@@ -24,7 +24,7 @@ class FunASRNanoEngine:
         import model as _nano_model  # noqa: F401
 
         from funasr import AutoModel
-        from model_manager import (
+        from app.model_manager import (
             ASR_MODEL_IDS,
             ensure_qwen_weights,
             get_local_model_path,

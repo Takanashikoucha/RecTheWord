@@ -62,7 +62,9 @@ def _proxy_env(proxy: str):
             os.environ["NO_PROXY"] = saved_no_proxy
         urllib.request.install_opener(saved_opener)
 
-APP_DIR = Path(__file__).parent
+# Project root is the parent of the app/ package (where main.py, config.yaml,
+# install.ps1 live). Models + caches anchor to the root, not to app/.
+APP_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = APP_DIR / "models"
 
 ASR_MODEL_IDS = {

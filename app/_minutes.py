@@ -56,7 +56,7 @@ def generate_from_segments(
     if labels is not None:
         transcript = labels.to_minutes_text(segments)
     else:
-        from _labels import SpeakerLabels
+        from app._labels import SpeakerLabels
 
         transcript = SpeakerLabels().to_minutes_text(segments)
     if not transcript.strip():
