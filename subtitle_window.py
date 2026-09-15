@@ -5,7 +5,7 @@ Uses QPainterPath for outlined text rendering.
 Usage:
   - Middle-click drag to move the window
   - Configure via tray menu → Subtitle Mode → Settings
-  - OBS: Window Capture → select "LiveTranslate Subtitle" → check "Allow Transparency"
+  - OBS: Window Capture → select "RecTheWord Subtitle" → check "Allow Transparency"
 """
 
 import ctypes

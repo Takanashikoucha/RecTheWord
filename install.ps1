@@ -1,4 +1,4 @@
-# LiveTranslate - One-click installer
+# RecTheWord - One-click installer
 # Usage: Double-click install.bat (or run: powershell -ExecutionPolicy Bypass -File install.ps1)
 
 $ErrorActionPreference = "Stop"

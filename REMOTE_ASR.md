@@ -1,12 +1,12 @@
 # Remote Whisper ASR
 
-Run speech recognition on a **separate GPU machine** and have LiveTranslate talk
-to it over HTTP. Useful when the PC running LiveTranslate has no NVIDIA GPU
+Run speech recognition on a **separate GPU machine** and have RecTheWord talk
+to it over HTTP. Useful when the PC running RecTheWord has no NVIDIA GPU
 (CPU-only faster-whisper is too slow for real-time) but another machine on the
 LAN does.
 
 ```
-LiveTranslate (this PC) ──HTTP──> asr_server.py (GPU machine) ──> faster-whisper / CUDA
+RecTheWord (this PC) ──HTTP──> asr_server.py (GPU machine) ──> faster-whisper / CUDA
       RemoteASREngine              /transcribe, /health
 ```
 
@@ -59,7 +59,7 @@ So the server starts on boot and restarts on failure:
 ```ini
 # /etc/systemd/system/asr.service
 [Unit]
-Description=LiveTranslate Remote ASR Server
+Description=RecTheWord Remote ASR Server
 After=network-online.target
 
 [Service]
@@ -78,7 +78,7 @@ sudo systemctl enable --now asr.service
 journalctl -u asr.service -f          # follow logs
 ```
 
-## 2. In LiveTranslate — point at the server
+## 2. In RecTheWord — point at the server
 
 1. Open **Settings → VAD / ASR**.
 2. Set **ASR engine** to **Remote Whisper (remote GPU server)**.

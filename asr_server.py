@@ -1,7 +1,7 @@
 """
-Remote ASR server for LiveTranslate, using faster-whisper.
+Remote ASR server for RecTheWord, using faster-whisper.
 
-Run this on a machine with a GPU, then point LiveTranslate's "Remote Whisper"
+Run this on a machine with a GPU, then point RecTheWord's "Remote Whisper"
 engine at it (Settings -> VAD/ASR -> Remote ASR Server URL). The client
 (asr_remote.py) POSTs raw float32 PCM (16 kHz mono) to /transcribe and gets
 back the transcription as JSON.

@@ -418,7 +418,7 @@ class LanePipeline:
 def setup_logging():
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"livetrans_{datetime.now():%Y%m%d_%H%M%S}.log"
+    log_file = log_dir / f"recthew_{datetime.now():%Y%m%d_%H%M%S}.log"
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
@@ -1420,7 +1420,7 @@ class LiveTranslateApp:
         log.warning(
             f"Memory ceiling reached: combined RSS (main+worker)={rss_mb:.0f}MB "
             f"(threshold {self._mem_threshold_mb}MB). "
-            f"Recommend restarting LiveTranslate to free C-side allocator caches."
+            f"Recommend restarting RecTheWord to free C-side allocator caches."
         )
         if self._mem_warning_callback is not None:
             try:
@@ -2508,7 +2508,7 @@ def main():
 
     def _on_memory_warning(rss_mb: float):
         tray.showMessage(
-            "LiveTranslate",
+            "RecTheWord",
             t("mem_warning_msg").format(rss=int(rss_mb)),
             QSystemTrayIcon.MessageIcon.Warning,
             10000,

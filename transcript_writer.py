@@ -52,7 +52,7 @@ class TranscriptWriter:
         self._session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         header_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for kind in self.KINDS:
-            path = self._base_dir / f"livetrans_{self._session_ts}_{kind}.txt"
+            path = self._base_dir / f"recthew_{self._session_ts}_{kind}.txt"
             try:
                 # line buffered so tail -f works; append mode in case session reopens
                 fp = open(path, "a", encoding="utf-8", buffering=1)
