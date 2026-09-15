@@ -34,7 +34,6 @@ app/               # all application modules (package)
 config.yaml        # base defaults (anchored to repo root, next to main.py)
 requirements.txt
 install.ps1 / start.bat / update.bat / build_release.ps1
-tests/
 ```
 
 Runtime resources anchor to their owning file's directory: `config.yaml` and
@@ -51,9 +50,6 @@ resolves to the repo root for `models/`).
 
 Lint: `python -m ruff check --select F,E,W --ignore E501,E402 main.py app/*.py`
 (E402 ignored because `main.py` imports torch before PyQt6).
-
-Tests: `.venv/Scripts/python.exe -m pytest tests/ -q` (needs numpy/pytest;
-heavy ML deps not required for the pure-logic suite).
 
 ## Architecture
 

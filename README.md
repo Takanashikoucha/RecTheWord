@@ -80,26 +80,18 @@ pip install -r requirements.txt
 ## 目录结构
 
 ```
-main.py                 # 入口 + 双路管道编排（LanePipeline）
-audio_capture.py        # PyAudioWPatch WASAPI 回环 + 麦克风（双路独立队列）
-vad_processor.py        # Silero VAD（32ms，渐进/自适应静音）
-asr_client.py / asr_worker.py / asr_engine.py 等   # ASR worker 进程 + 多后端
-asr_remote.py / asr_server.py                     # 远程 ASR 客户端 / 服务端
-translator.py           # OpenAI 兼容客户端（流式 / JSON schema / 上下文）
-subtitle_overlay.py     # 透明 overlay（双栏：🔊 上 / 🎤 下，两级显示）
-control_panel.py        # 设置 UI
-model_manager.py        # 模型下载 / 缓存（ModelScope / HF 双源）
-_recorder.py            # 会议 WAV 录音（mix/mic/sys）
-_transcript_log.py      # 结构化文字流 JSONL
-_sessions.py            # 会话存储层（索引 + 每会话目录）
-_session_ui.py          # 会话管理窗口
-_offline_diarize.py     # 离线精修（懒加载 FunASR 全家桶）
-_labels.py              # 说话人姓名标注
-_minutes.py             # 纪要生成（双输入源）
-_refine_view.py         # 精修稿查看 + 说话人改名 + 纪要触发
-config.yaml / user_settings.json
-tests/                  # 单测（含会议模块）
-_legacy_*               # 旧 FFmpeg 架构（已被本基底取代，仅供参考）
+main.py                 # 顶层薄入口（import app.*）
+app/                    # 全部应用模块（包）
+  ├─ 核心逻辑  audio_capture / vad_processor / asr_client / asr_worker /
+  │            asr_engine / asr_remote / asr_server / translator / model_manager
+  ├─ UI        subtitle_overlay / subtitle_window / subtitle_settings /
+  │            control_panel / dialogs / log_window
+  ├─ 会议模块  _recorder / _transcript_log / _sessions / _session_ui /
+  │            _offline_diarize / _labels / _minutes / _refine_view
+  ├─ i18n.py + i18n/   # UI 字符串 + 更新日志
+  └─ funasr_nano/      # vendored nano 模型代码
+config.yaml             # 基础默认（锚定仓库根，紧邻 main.py）
+install.ps1 / start.bat / update.bat / build_release.ps1
 ```
 
 ## 配置
@@ -132,14 +124,6 @@ _legacy_*               # 旧 FFmpeg 架构（已被本基底取代，仅供参�
 | PyAudioWPatch 采集 | ~0.2GB |
 | **实时运行态合计** | **~2GB** |
 | 离线精修（手动触发时才懒加载） | 峰值 ~5GB |
-
-## 测试
-
-```bat
-.venv\Scripts\python.exe -m pytest tests/ -q
-```
-
-纯逻辑单测（无需安装 torch/funasr 全栈，但需要 numpy/pytest）。
 
 ## 许可
 

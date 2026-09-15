@@ -45,7 +45,7 @@ Windows 链路）为基底改造，**弃用旧 FFmpeg/WASAPI 子进程采集路�
 PyQt6 UI（主线程）
    │ Qt signals
    ▼
-main.py (LiveTranslateApp)
+main.py (LiveTranslateApp)   # 顶层入口；下列模块均在 app/ 包内
   ├── audio_capture.py     WASAPI 回环 + 麦克风（双路独立队列）
   ├── vad_processor.py     Silero VAD（每路一个实例）
   ├── LanePipeline         每路的 VAD + 增量 ASR 状态机 + 段队列（本应用新增）
@@ -152,7 +152,7 @@ mic 路 → `mic_target_language`（默认空 = 不翻译，可配如 `en`）。
 
 ## 8. 验收标准
 
-1. `pytest tests/ -q` 全绿（含两级显示事件、会话 CRUD、双源纪要、labels 持久化）。
+1. 纯逻辑自测全绿（两级显示事件、会话 CRUD、双源纪要、labels 持久化）。
 2. overlay 透明置顶、点击穿透、双栏两级显示（interim 灰 → final 定色原位替换）。
 3. 停止后零自动计算；历史会话可手动补做精修/纪要并落盘。
 4. 精修稿窗口可把「说话人N」改为真实姓名，保存后全量稿与纪要即时更新且持久。

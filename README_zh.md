@@ -99,12 +99,6 @@ pip install -r requirements.txt
 | **实时运行态合计** | **~2GB** |
 | 离线精修（手动触发时才懒加载） | 峰值 ~5GB |
 
-## 测试
-
-```bat
-.venv\Scripts\python.exe -m pytest tests/ -q
-```
-
 ## 许可
 
 软件代码 MIT（源自 LiveTranslate，保留署名）；模型权重许可见各自模型卡。
