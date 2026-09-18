@@ -38,17 +38,8 @@ tmp/
 .DS_Store
 Thumbs.db
 
-# Test / local venv
-.pytest_cache/
-.venvtest/
-tests/screenshots/
-tests/demo_shots/
-tests/video_frames/
-tests/e2e_demo.mp4
-# Generated TTS audio (regenerable via tests/make_*.py) — keep repo small.
-# script.txt (原文) is kept tracked so recognition can be judged offline.
-tests/fixtures/*/*.wav
-tests/fixtures/*/*.mp3
+# Tests are local-only (not shipped in the repo)
+tests/
 
 # Agent state
 .dsh-state.md
