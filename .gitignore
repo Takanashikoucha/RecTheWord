@@ -8,11 +8,14 @@ build/
 dist/
 .venv/
 venv/
+.uv-cache/
 
 # Model caches (downloaded at install/runtime from ModelScope) — never commit.
-# The lightweight SenseVoice-Small is fetched by install.ps1 (step 7) so the
-# repo stays small enough for plain git (GitHub 100MB/file limit).
+# Models are fetched by install.ps1 (ModelManager) so the repo stays small.
+# The single documented exception (qfuxa streaming tower) is also runtime-fetched.
 models/
+.modelscope_cache/
+.hf_home/
 
 # App data (never commit)
 recordings/
@@ -24,8 +27,10 @@ config.json
 *.wav
 *.mp3
 
-# Legacy (superseded by LiveTranslate base)
-_legacy_*/
+# Local staging / scratch (never commit)
+_dl/
+tmp/
+*:memory:*
 
 # Editors / OS
 .idea/
@@ -33,12 +38,11 @@ _legacy_*/
 .DS_Store
 Thumbs.db
 
-# test / local venv
+# Test / local venv
 .pytest_cache/
 .venvtest/
+tests/screenshots/
+tests/demo_shots/
 
-# agent state
+# Agent state
 .dsh-state.md
-
-# local model staging (zips prepared for GitHub Release upload)
-_dl/

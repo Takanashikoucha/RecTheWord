@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RecTheWord — 透明字幕浮窗（精简版）</title>
+<style>
+:root{
+  --accent:#4cc2ff;
+  --sys:#b48cff;
+  --font:"Segoe UI","PingFang SC","Microsoft YaHei",-apple-system,sans-serif;
+  --mono:"Cascadia Code",Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+/* 模拟桌面背景，让半透明效果可见 */
+body{
+  background:
+    radial-gradient(circle at 20% 30%, #2a3550 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, #3a2a50 0%, transparent 45%),
+    linear-gradient(135deg,#1a2233,#252038);
+  display:grid;place-items:center;overflow:hidden;
+  font-family:var(--font);
+}
+.hint{position:fixed;top:18px;left:22px;color:rgba(255,255,255,.4);font-size:12px;display:flex;gap:14px;align-items:center}
+.hint kbd{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);border-radius:5px;padding:2px 8px;font-family:var(--mono);font-size:11px;color:rgba(255,255,255,.6)}
+
+/* ============ 浮窗本体 ============ */
+.overlay-win{
+  position:absolute;left:50%;bottom:6vh;transform:translateX(-50%);
+  width:min(980px,86vw);
+  padding:18px 26px 20px;
+  background:rgba(10,13,18,.55);              /* 半透明底 */
+  backdrop-filter:blur(14px) saturate(1.3);   /* 毛玻璃 */
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:18px;
+  box-shadow:0 18px 60px rgba(0,0,0,.45);
+  cursor:grab;
+  transition:opacity .3s;
+}
+.overlay-win.compact{width:min(720px,70vw)}
+.ov-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:#3ddc97;animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.ov-title{font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.45)}
+.ov-meta{margin-left:auto;display:flex;gap:14px;font-size:11px;color:rgba(255,255,255,.4);font-family:var(--mono)}
+.ov-meta b{color:rgba(255,255,255,.75);font-weight:600}
+.ov-controls{display:flex;gap:6px}
+.cbtn{width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:rgba(255,255,255,.6);cursor:pointer;font-size:12px;display:grid;place-items:center;transition:.15s}
+.cbtn:hover{background:rgba(255,255,255,.15);color:#fff}
+
+.lines{display:flex;flex-direction:column;gap:10px;min-height:96px}
+.line{display:flex;gap:12px;align-items:flex-start;animation:rise .3s ease}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.badge{flex:none;font-size:10px;font-weight:700;padding:3px 0;width:34px;text-align:center;border-radius:6px;margin-top:5px}
+.badge.mic{background:rgba(76,194,255,.2);color:var(--accent)}
+.badge.sys{background:rgba(180,140,255,.2);color:var(--sys)}
+.txt{min-width:0}
+.src{font-size:22px;line-height:1.4;font-weight:600;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.6)}
+.tr{font-size:14.5px;line-height:1.45;color:rgba(255,255,255,.62);margin-top:2px;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+.line.interim .src{color:rgba(255,255,255,.55)}
+.line.interim .tr{color:rgba(255,255,255,.35)}
+.ts{font-family:var(--mono);font-size:10px;color:rgba(255,255,255,.3);margin-top:3px}
+
+/* 说话人标签变体 */
+.speaker{flex:none;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;margin-top:5px;white-space:nowrap}
+.speaker.a{background:rgba(61,220,151,.18);color:#3ddc97}
+.speaker.b{background:rgba(255,180,84,.18);color:#ffb454}
+.speaker.c{background:rgba(255,120,140,.18);color:#ff788c}
+.mode-speaker .badge{display:none}
+
+/* 主题切换 */
+body.theme-solid .overlay-win{background:rgba(8,10,14,.92);backdrop-filter:none}
+body.theme-outline .overlay-win{background:transparent;border:1.5px solid rgba(255,255,255,.35);backdrop-filter:none}
+body.theme-light .overlay-win{background:rgba(245,247,250,.85)}
+body.theme-light .src{color:#111827;text-shadow:none}
+body.theme-light .tr{color:#4b5563;text-shadow:none}
+body.theme-light .ov-title,body.theme-light .ov-meta{color:rgba(0,0,0,.45)}
+body.theme-light .ov-meta b{color:rgba(0,0,0,.8)}
+
+/* Tweaks */
+.tweaks{position:fixed;right:16px;bottom:16px;width:230px;background:rgba(20,24,31,.95);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:14px;z-index:60;font-size:12px;color:#cbd5e1;box-shadow:0 16px 48px rgba(0,0,0,.5)}
+.tweaks h6{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px}
+.tweaks .row{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.tweaks label{color:#94a3b8}
+.tweaks select{background:#0f141b;color:#e2e8f0;border:1px solid rgba(255,255,255,.15);border-radius:7px;padding:4px 8px;font-size:11.5px;font-family:inherit}
+.tweaks input[type=range]{width:88px;accent-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="hint">模拟桌面 · 浮窗可拖动 · 右下角 Tweaks 切换外观</div>
+
+<!-- ===== 透明字幕浮窗 ===== -->
+<div class="overlay-win" id="win">
+  <div class="ov-head">
+    <span class="dot"></span>
+    <span class="ov-title">RecTheWord · 实时字幕</span>
+    <div class="ov-meta">
+      <span>延迟 <b id="lat">0.8s</b></span>
+      <span id="clock">12:47</span>
+    </div>
+    <div class="ov-controls">
+      <button class="cbtn" title="紧凑模式" onclick="document.getElementById('win').classList.toggle('compact')">⇱</button>
+      <button class="cbtn" title="隐藏/显示" onclick="hideWin()">—</button>
+      <button class="cbtn" title="回到主界面">✕</button>
+    </div>
+  </div>
+
+  <div class="lines" id="lines">
+    <div class="line final">
+      <span class="badge sys">扬</span>
+      <div class="txt">
+        <div class="src">では、まず予算の範囲について確認させてください。</div>
+        <div class="tr">那么，我们先来确认一下预算的范围。</div>
+        <div class="ts">00:12:05</div>
+      </div>
+    </div>
+    <div class="line final">
+      <span class="badge mic">麦</span>
+      <div class="txt">
+        <div class="src">没问题，我们这季度还剩大概三十万的额度。</div>
+        <div class="tr">Sure, we still have roughly 300k left this quarter.</div>
+        <div class="ts">00:12:11</div>
+      </div>
+    </div>
+    <div class="line interim">
+      <span class="badge sys">扬</span>
+      <div class="txt">
+        <div class="src">了解です。それではサーバー費用は…</div>
+        <div class="tr">明白了。那么服务器费用……</div>
+        <div class="ts">00:12:19 · 识别中…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Tweaks ===== -->
+<div class="tweaks">
+  <h6>Tweaks</h6>
+  <div class="row"><label>主题</label>
+    <select onchange="setTheme(this.value)">
+      <option value="">毛玻璃（默认）</option>
+      <option value="theme-solid">实心深色</option>
+      <option value="theme-outline">描边极简</option>
+      <option value="theme-light">浅色（投影场景）</option>
+    </select>
+  </div>
+  <div class="row"><label>标签模式</label>
+    <select onchange="setMode(this.value)">
+      <option value="">来源（麦/扬）</option>
+      <option value="mode-speaker">说话人（A/B/C）</option>
+    </select>
+  </div>
+  <div class="row"><label>字号</label><input type="range" min="16" max="34" value="22" oninput="setSize(this.value)"></div>
+  <div class="row"><label>底色不透明度</label><input type="range" min="0" max="95" value="55" oninput="setOpacity(this.value)"></div>
+</div>
+
+<script>
+let t=767;setInterval(()=>{t++;document.getElementById('clock').textContent=String(Math.floor(t/60)%100).padStart(2,'0')+':'+String(t%60).padStart(2,'0');},1000);
+setInterval(()=>{document.getElementById('lat').textContent=(0.6+Math.random()*0.5).toFixed(1)+'s';},2000);
+function hideWin(){const w=document.getElementById('win');w.style.opacity=w.style.opacity==='0'?'1':'0'}
+function setTheme(v){document.body.className=v}
+function setMode(v){
+  const win=document.getElementById('win');
+  win.classList.toggle('mode-speaker',v==='mode-speaker');
+  document.querySelectorAll('.badge').forEach((b,i)=>{
+    if(v==='mode-speaker'){b.outerHTML=['<span class="speaker a">张</span>','<span class="speaker b">山田</span>','<span class="speaker c">李</span>'][i]||'';}
+  });
+  if(v==='')location.reload();
+}
+function setSize(v){document.querySelectorAll('.src').forEach(e=>e.style.fontSize=v+'px')}
+function setOpacity(v){document.getElementById('win').style.background='rgba(10,13,18,'+(v/100)+')'}
+// drag
+const win=document.getElementById('win');let sx,sy,sl,st,moving=false;
+win.addEventListener('mousedown',e=>{moving=true;sx=e.clientX;sy=e.clientY;sl=parseFloat(win.style.left||window.innerWidth/2);st=parseFloat(win.style.top||window.innerHeight*0.8);win.style.cursor='grabbing'});
+window.addEventListener('mousemove',e=>{if(!moving)return;win.style.left=(sl+e.clientX-sx)+'px';win.style.top=(st+e.clientY-sy)+'px';win.style.transform='none'});
+window.addEventListener('mouseup',()=>{moving=false;win.style.cursor='grab'});
+</script>
+</body>
+</html>

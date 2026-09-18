@@ -1,130 +1,130 @@
-# RecTheWord
+# RecTheWord v2
 
-**会议场景的双向实时翻译 + 录音 + AI 会议纪要**桌面应用（Windows CPU，无 GPU）。
+**会议场景的双通道实时字幕 + 实时翻译 + AI 会议纪要**桌面应用（Windows 纯 CPU，无 GPU）。
 
-基于 [LiveTranslate](https://github.com/TheDeathDragon/LiveTranslate)（MIT）改造：
-保留其已验证的 Windows 链路（PyAudioWPatch WASAPI 采集 → Silero VAD →
-faster-whisper/FunASR ASR worker → OpenAI 兼容流式翻译 → PyQt6 透明 overlay），
-叠加会议差异化能力：
+完全重构版（`rtw/` 包），替换早期基于 LiveTranslate 的 `app/` 实现。核心识别引擎为
+**Qwen3-ASR 0.6B**（Apache-2.0），翻译与纪要**仅走 OpenAI 兼容 API**，模型**仅从
+ModelScope 下载**（唯一破例：qfuxa 流式塔来自 HuggingFace，经用户批准）。
 
-| 能力 | 说明 |
-|---|---|
-| **双路实时识别** | 麦克风（🎤 自己）与系统音频回环（🔊 对方）**各自独立** VAD + ASR，界面双栏分列显示。 |
-| **两级显示** | interim 中间结果近零延迟上屏（灰色），整句识别完成后 final 原位替换（定色）。 |
-| **三语识别** | 中 / 日 / 英自动语种检测（Whisper 多语模型；可切日语专用微调模型）。 |
-| **双向翻译** | 对方 → 中文（默认开）；自己 → 目标语（默认关，可配，如中→英）。翻译只跟随 final。 |
-| **全程录音** | 停止时落盘 `mix.wav`（双路混合）+ `mic.wav` + `sys.wav`（分轨）。 |
-| **文字流记录** | 每句 `{时间戳, 路, 语种, 原文, 译文}` 写入 `transcript.jsonl`，可导出带标注文本。 |
-| **会话管理** | 每次录制 = 一个会话；托盘菜单「会议会话管理」列出历史会话，可打开、补做精修/纪要、删除。 |
-| **离线精修（手动）** | 停止后**默认不自动执行**；手动对 `mix.wav` 跑 SenseVoice+VAD+PUNC+CAM++ 说话人分离，得带说话人+时间戳全量稿。 |
-| **说话人标注** | 精修稿中把匿名「说话人N」改为真实姓名（可编辑、持久化、即时刷新）。 |
-| **会议纪要（手动）** | 二选一输入源：**A 离线精修稿**（带说话人）/ **B 实时文字流**（零额外计算），提交 OpenAI 兼容接口生成 Markdown 纪要，可导出。 |
-| **远程 ASR** | 本地 CPU 不够时，把识别卸载到 GPU 机器（`asr_server.py`）。 |
+## 能力一览
 
----
+| 能力 | 说明 | 验证状态 |
+|---|---|---|
+| **双通道实时识别** | 麦克风（WASAPI 输入）+ 扬声器（WASAPI 环回）各自独立 VAD + ASR | ✅ 全链路 |
+| **实时字幕** | VAD 切句 → 整句解码 → 上屏；麦/扬彩色徽标分列 | ✅ 全链路 |
+| **实时翻译** | 走 OpenAI 兼容 API，SSE 流式逐字回填；API 不可用时显式降级（只显示原文 + 提示） | ✅ 全链路（含降级路径） |
+| **多语种** | 中 / 日 / 英自动语种检测（韩 / 德可扩展） | ✅ 自动检测 |
+| **说话人粗分** | 实时按通道 + 能量/停顿启发式（零额外算力）；会后 pyannote 精修为可选模块 | ✅ 落盘 |
+| **会话存储** | 每场会议 = 一个目录（meta / transcript.jsonl / minutes.md） | ✅ 落盘 |
+| **AI 会议纪要** | 走 API 流式生成 Markdown（摘要 / 决议 / 待办），自动落盘 | ✅ 全链路（含降级路径） |
+| **UI** | splash 启动页 + 主窗口 + 透明字幕浮窗（PySide6，4 主题 + 拖拽） | ✅ offscreen 冒烟 |
+| **等待态机制** | 任何异步等待（模型加载 / API 检查）都经 StatusMachine 显式告知用户 | ✅ 事件齐全 |
+
+## 架构
+
+```
+main.py                  # 顶层入口（环境检查 → 模型就位 → UI）
+rtw/                     # 全部应用模块
+  ├─ core/               # EventBus / StatusMachine / Config / ModelManager(ModelScope)
+  ├─ audio/             # RingBuffer / ReplaySource(WASAPI 抽象)
+  ├─ vad/               # SileroVad(ONNX)
+  ├─ asr/               # AsrWorker 子进程（Qwen3-ASR 整句解码，与 UI 零竞争）
+  ├─ llm_api/           # LlmApiClient（OpenAI 兼容，SSE 流式 + 故障注入）
+  ├─ pipeline/          # orchestrator（VAD→ASR→翻译 + 会话 + 说话人 + 纪要编排）
+  ├─ session/           # SessionStore
+  ├─ diarize/           # CoarseDiarizer（实时粗分）
+  ├─ minutes/           # MinutesGenerator
+  └─ ui/                # theme / splash / main_window / overlay / app
+tests/                   # 单元 + 全链路 + 双路径 + 1x 实时 + 验收 + int8 基准
+config.yaml              # 基础默认（锚定仓库根）
+install.ps1 / start.bat  # uv 加速安装 + 环境缺失自动衔接
+docs/DESIGN.md           # 设计方案
+mockup/                  # UI 概念稿（HTML）
+```
+
+**进程隔离**：ASR 推理在独立子进程（spawn），与 UI 进程零 GIL 竞争；UI 进程纯渲染，
+所有数据经 EventBus 到达。
+
+## 选型决策（实测）
+
+- **路线 A（VAD 切句 + 整句解码）**：✅ 选用。24 核 RTF 0.18(zh)/0.26(en)，识别近乎完美，
+  语种自动检测正确，模型加载 1.9s。
+- **路线 B（qfuxa 因果流式塔）**：❌ 弃用。该塔是英文专用微调（LibriSpeech 蒸馏），
+  中文输出乱码（WHK 源码亦警告 zh CER 11.4→85.7），24 核 RTF 0.82 会落后于实时。
+  代码保留，将来有多语言塔可换回。
 
 ## 系统要求
 
 - **Windows 10 / 11 x64**
 - **Python 3.10 – 3.12**
-- CPU 即可（无 GPU 要求；GPU 可选加速）
-- 网络（首次运行下载 ASR 模型）
+- CPU 即可（无 GPU 要求）
+- 网络（首次运行从 ModelScope 下载模型）
 
 ## 安装与运行
 
 ```bat
-:: 一次性安装（建虚拟环境 + 装依赖 + 检测 GPU + 预取常用 ASR 模型）
-install.bat
-
-:: 启动
+:: 一键启动（环境缺失时自动调 install.ps1：uv 建 venv + 装依赖 + ModelScope 预取模型）
 start.bat
-:: 或
-.venv\Scripts\python.exe main.py
 ```
 
-`install.bat` 会预取常用 ASR 模型，装完即可直接运行、首次启动无需再下载：
-
-- **SenseVoice-Small**（默认引擎，约 900MB）← **ModelScope**
-- **Whisper base / small**（常用备选，148 / 488MB）← **HF 镜像**
-  （`https://hf-mirror.com`，优先）；镜像不通时回退 **GitHub Release** 附件
-
-更大的模型（Fun-ASR-Nano、Whisper medium/large 等）由应用在设置里按需从
-ModelScope / HF 镜像下载。首次启动还会走 SetupWizard 配置翻译/纪要 API（任意
-OpenAI 兼容端点）。
-
-> 注：模型不内嵌在 git 仓库（GitHub 单文件上限 100MB），而是安装时从
-> ModelScope / HF 镜像（备用 Release）拉取——这保持了仓库小巧、可用普通 git
-> 分发，同时实现开箱即用。
-
-### 手动安装
+手动安装：
 
 ```bat
 python -m venv .venv
 .venv\Scripts\activate
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 .venv\Scripts\python.exe main.py
 ```
 
-## 使用流程
+> 模型不内嵌 git（GitHub 单文件上限 100MB），安装时从 ModelScope 拉取（ModelManager，
+> 断点续传 + 进度回报给 splash）。唯一破例的 qfuxa 流式塔来自 HuggingFace（用户批准）。
 
-1. 启动后托盘菜单 / 设置里选择**扬声器（回环）**与**麦克风**设备。
-2. 点 **开始**：透明 overlay 出现双栏实时字幕——上栏 🔊 对方（原文+→中文译文），
-   下栏 🎤 自己（原文+可选→目标语译文）。
-3. 点 **停止**：会话自动归档（3 个 WAV + 文字流 + 元数据），**此后零后台计算**。
-4. 托盘菜单「**会议会话管理**」→ 选中会话：
-   - **离线精修**：手动跑说话人分离（耗时数十秒~数分钟）；
-   - 精修完成后可编辑**说话人姓名**；
-   - **生成纪要**：选「离线精修稿」或「实时文字流」→ AI 生成 Markdown → 可导出。
+## 性能（24 核开发机基线，8 核目标机按比例外推）
 
-## 目录结构
+| 指标 | 24 核实测 | 8 核 ≤3GHz 预估 | 目标 |
+|---|---|---|---|
+| 冷启动到 ASR 就绪 | 3.7s | ~8-12s | <15s ✅ |
+| ASR RTF | 0.18 / 0.26 | ~0.5-0.9 | <1（实时） |
+| 首字更新 p50 / p95 | 0.54s / 0.81s | ~1.5-2.5s | p50<1.0 / p95<1.5 |
+| 2h 内存估算 | 459MB | 相近 | <500MB ✅ |
 
-```
-main.py                 # 顶层薄入口（import app.*）
-app/                    # 全部应用模块（包）
-  ├─ 核心逻辑  audio_capture / vad_processor / asr_client / asr_worker /
-  │            asr_engine / asr_remote / asr_server / translator / model_manager
-  ├─ UI        subtitle_overlay / subtitle_window / subtitle_settings /
-  │            control_panel / dialogs / log_window
-  ├─ 会议模块  _recorder / _transcript_log / _sessions / _session_ui /
-  │            _offline_diarize / _labels / _minutes / _refine_view
-  ├─ i18n.py + i18n/   # UI 字符串 + 更新日志
-  └─ funasr_nano/      # vendored nano 模型代码
-config.yaml             # 基础默认（锚定仓库根，紧邻 main.py）
-install.ps1 / start.bat
-```
+**int8 量化结论**：torch 动态量化（308 个 Linear 层）**无加速收益（1.02x）**——weight-only
+qint8 对 transformer decoder 在 CPU 上无效（瓶颈在 attention / 全序列 matmul，无 kernel
+融合），且 `quantize_dynamic` 已是 legacy API。**有效的 int8 提速需走 ONNX Runtime 的
+int8 激活+权重量化**（proper 融合），列为后续优化项。
+
+## 验证矩阵
+
+| 测试 | 覆盖 | 结果 |
+|---|---|---|
+| `test_e2e_full` | VAD→ASR→翻译全链路（16x 回放） | ✅ 5 段全通 0 错误 |
+| `test_p4_e2e` | 会话存储 + 说话人 + 纪要（正常 / API 宕机双路径） | ✅ 双路径 |
+| `test_realtime_1x` | 83s 双通道 TTS 对话，**1x 不加速** | ✅ 双通道 0 错误 |
+| `test_acceptance` | 冷启动 / 延迟 / 内存 硬指标 | ✅ PASS |
+| `test_int8_bench` | int8 vs fp32 性能 + 识别一致性 | ⚠️ 无加速（见上） |
+| `test_ui_smoke` | 三窗口实例化 + 事件注入 + 截图 | ✅ offscreen |
+
+> 注：1x 实时测试的识别率（~70%）受 espeak-ng 机器人腔音质限制；干净短音频离线基准为
+> 4/5 准确。真实人声会议预期显著更高。
 
 ## 配置
 
-- `config.yaml`：基础默认（音频设备、ASR 引擎/模型、翻译 API、字幕样式）。
-- `user_settings.json`：运行时设置（模型、VAD 参数、ASR 引擎、`mic_target_language`、
-  缓存路径等），优先级高于 config.yaml，原子写入防损坏。
+- `config.yaml`：基础默认（音频设备、VAD 参数、ASR 引擎/切句策略、翻译 API、字幕样式）。
+  - `asr.segment_policy`：`balanced`(3s，默认，稳) / `aggressive`(1.5s，低首字延迟但对长句易碎片化)
+  - `vad.min_silence_ms`：800（实测校准，TTS/噪声音频音节间隙较长）
+- 翻译 / 纪要 API：任意 OpenAI 兼容端点（`api.base_url` + `api_key` + `model`）。
 
 ## 会话存储布局
 
 ```
-~/.rectheword/sessions/
-  index.json                          # 会话索引
-  <YYYYMMDD-HHMMSS>/
-    meta.json       # 设备 / ASR 后端 / 翻译配置快照
-    mix.wav / mic.wav / sys.wav
-    transcript.jsonl
-    refined.json    # （手动精修后）
-    labels.json     # 说话人姓名映射
-    minutes.md      # （手动生成后）
+~/.rectheword/sessions/<YYYYMMDD-HHMMSS>/
+  meta.json        # 引擎 / 目标语种 / 创建时间
+  transcript.jsonl # 逐句 {时间戳, 通道, 原文, 语种, 说话人, 译文}
+  minutes.md       # （生成后）Markdown 纪要
 ```
-
-## 内存预算（16G 机器）
-
-| 组件 | 估算 |
-|---|---|
-| PyQt6 + 应用 | ~0.5GB |
-| faster-whisper small int8（单实例，两路共享） | ~1GB |
-| Silero VAD ×2 | ~0.2GB |
-| PyAudioWPatch 采集 | ~0.2GB |
-| **实时运行态合计** | **~2GB** |
-| 离线精修（手动触发时才懒加载） | 峰值 ~5GB |
 
 ## 许可
 
-软件代码 MIT（源自 LiveTranslate，保留署名）；模型权重许可见各自模型卡。
+软件代码 MIT；Qwen3-ASR / qwen-asr / qwen3-asr-causal 均 Apache-2.0；PySide6 GPL
+（内部工具可）；Silero / ONNX MIT/Apache；pyannote MIT。模型权重许可见各自模型卡。

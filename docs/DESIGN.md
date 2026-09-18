@@ -1,162 +1,148 @@
-# RecTheWord 设计文档
+# RecTheWord v2 设计文档
+
+> 本文档描述完全重构版（`rtw/` 包）的设计。早期基于 LiveTranslate 的 `app/` 实现
+> 已从仓库移除（git 历史可追溯）。
 
 ## 1. 目标
 
-Windows + PyQt6 桌面应用，面向**会议场景、CPU（无 GPU）低延迟**：
+Windows 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低延迟实时处理：
 
-1. **双路实时识别 + 翻译**：麦克风（🎤 自己）与系统音频回环（🔊 对方）各自独立
-   VAD + ASR，透明 overlay 双栏分列显示；中/日/英自动语种检测。
-2. **两级显示**：interim 中间结果近零延迟上屏，整句 final 原位替换。
-3. **全程录音**：停止时落盘 mix/mic/sys 三路 WAV。
-4. **文字流记录**：结构化 JSONL（时间戳/路/语种/原文/译文）。
-5. **会话管理**：每次录制 = 一个会话；历史会话可打开、补做精修/纪要、删除。
-6. **离线精修 + 说话人标注 + 会议纪要**：停止后**默认不自动执行**，全部手动触发；
-   纪要支持「离线精修稿 / 实时文字流」二选一输入源。
-7. **远程 ASR**：本地 CPU 不足时卸载到 GPU 机器。
+1. **双通道实时识别 + 翻译**：麦克风（WASAPI 输入）+ 扬声器（WASAPI 环回）各自
+   独立 VAD + ASR；中/日/英自动语种检测（韩/德可扩展）。
+2. **实时字幕**：VAD 切句 → 整句解码 → 上屏，麦/扬彩色徽标分列。
+3. **实时翻译**：仅走 OpenAI 兼容 API（SSE 流式）；API 不可用时显式降级。
+4. **说话人粗分**：实时零算力启发式；会后 pyannote 精修为可选模块。
+5. **会话存储 + AI 会议纪要**：逐句落盘，纪要走 API 流式生成 Markdown。
+6. **等待态机制**：任何异步等待都显式告知用户（加载/进度/ETA）。
 
-## 2. 基底与技术结论
+## 2. 关键技术结论（实测）
 
-以 [LiveTranslate](https://github.com/TheDeathDragon/LiveTranslate)（MIT，已验证
-Windows 链路）为基底改造，**弃用旧 FFmpeg/WASAPI 子进程采集路线**（未经验证）。
-
-- **采集**：`PyAudioWPatch` WASAPI 回环 + 麦克风，原生 44.1kHz 采集、内部重采样
-  16kHz mono、32ms chunk（Silero VAD 原生窗口）；设备热切换自动重连。
-- **双路**：`AudioCapture` 拆出 `audio_queue`（sys）与 `mic_queue`（mic）两个独立
-  队列，`get_audio()` / `get_mic_audio()` 分路取；mic 不再混入回环。
-- **VAD**：Silero v5（`silero-vad` PyPI 包内置模型，零网络），渐进静音
-  （<3s 全量 / 3-6s 半 / 6-10s 四分之一）+ 自适应静音（P75×1.2，0.3~2.0s）+
-  回溯切分 + 语音密度过滤。
-- **ASR**：GUI 进程不直接持有模型；`ASRClient` 管理一个 `ASRWorker` 子进程
-  （`multiprocessing` spawn + Pipe IPC + 超时），worker 拥有具体后端/模型。
-  后端：faster-whisper（主，base/small int8）、FunASR（SenseVoice/Nano）、
-  Anime-Whisper、远程 Whisper（HTTP）。两路**共享同一个 worker**（串行推理）。
-- **增量 ASR（两级显示核心）**：VAD 累积期间周期性跑 interim ASR →
-  `yasbd` 分句（40 语言规则式 + 逗号回退）→ 提交完整句 + 比例音频 trim
-  （+0.3s 余量，保留 ≥0.5s）+ 回声去重（committed tail 匹配）+ 短句缓冲
-  （≤8 字母数字字符并入下句）。VAD flush 时走 final 路径。
-- **翻译**：OpenAI 兼容客户端（流式 `translate_iter` / JSON schema / 上下文历史 /
-  思考模型禁用策略），按句异步，只跟随 final。
-- **UI**：PyQt6 透明 overlay（always-on-top、点击穿透、可拖拽、14 主题），
-  本应用改造为**双栏**（上 🔊 / 下 🎤，各自独立滚动）。
+- **识别引擎**：Qwen3-ASR 0.6B（Apache-2.0）。
+  - **路线 A（VAD 切句 + 整句解码）**：✅ 选用。24 核 RTF 0.18(zh)/0.26(en)，
+    识别近乎完美，语种自动检测正确，模型加载 1.9s。
+  - **路线 B（qfuxa 因果流式塔）**：❌ 弃用。该塔是英文专用微调（LibriSpeech
+    蒸馏），中文输出乱码（WHK 源码警告 zh CER 11.4→85.7），24 核 RTF 0.82 会
+    落后于实时。代码保留，将来有多语言塔可换回。
+- **int8 量化**：torch 动态量化（308 个 Linear 层）**无加速收益（1.02x）**——
+  weight-only qint8 对 transformer decoder 在 CPU 上无效（瓶颈在 attention / 全序列
+  matmul，无 kernel 融合），且 `quantize_dynamic` 已是 legacy API。有效提速需走
+  ONNX Runtime 的 int8 激活+权重量化（proper 融合），列为后续优化项。
+- **模型来源**：仅 ModelScope（ModelManager，断点续传 + 进度回报）。唯一破例：
+  qfuxa 流式塔来自 HuggingFace（用户批准，已记录）。
 
 ## 3. 架构
 
 ```
-PyQt6 UI（主线程）
-   │ Qt signals
+PySide6 UI（主线程，纯渲染）
+   │ EventBus（QTimer 33ms 泵驱动）
    ▼
-main.py (LiveTranslateApp)   # 顶层入口；下列模块均在 app/ 包内
-  ├── audio_capture.py     WASAPI 回环 + 麦克风（双路独立队列）
-  ├── vad_processor.py     Silero VAD（每路一个实例）
-  ├── LanePipeline         每路的 VAD + 增量 ASR 状态机 + 段队列（本应用新增）
-  ├── asr_client.py        ASR worker 进程管理（两路共享单 worker）
-  ├── translator.py        OpenAI 兼容流式翻译
-  ├── subtitle_overlay.py  透明 overlay（双栏：🔊 上 / 🎤 下）
-  ├── _recorder.py         会议 WAV 录音（mix/mic/sys）
-  ├── _transcript_log.py   结构化文字流 JSONL
-  ├── _sessions.py         会话存储层
-  ├── _session_ui.py       会话管理窗口
-  ├── _offline_diarize.py  离线精修（懒加载）
-  ├── _labels.py           说话人姓名标注
-  ├── _minutes.py          纪要生成（双输入源）
-  ├── _refine_view.py      精修稿查看 + 改名 + 纪要触发
-  └── model_manager.py     模型下载/缓存
+main.py                       # 环境检查 → 模型就位 → UI
+rtw/
+  ├─ core/
+  │   ├─ events.py            # EventBus（publish/subscribe/pump）
+  │   ├─ status_machine.py    # StatusMachine（begin/update/finish/error → "status"）
+  │   ├─ config.py            # Config（config.yaml + 默认值合并）
+  │   └─ model_manager.py     # ModelManager（ModelScope 下载，断点续传）
+  ├─ audio/
+  │   ├─ ring_buffer.py       # RingBuffer（30s 环形缓冲）
+  │   └─ replay_source.py     # ReplaySource（WASAPI 抽象 / 测试注入）
+  ├─ vad/silero.py           # SileroVad（ONNX，32ms 窗，流式判停 + 强制断句）
+  ├─ asr/worker.py           # AsrWorker 子进程（spawn + Pipe IPC，Qwen3 整句解码）
+  ├─ llm_api/client.py       # LlmApiClient（OpenAI 兼容，SSE 流式 + _EnvProxyFix）
+  ├─ pipeline/orchestrator.py # Pipeline（VAD→ASR→翻译 + 会话 + 说话人 + 纪要编排）
+  ├─ session/store.py        # SessionStore
+  ├─ diarize/coarse.py       # CoarseDiarizer（实时粗分）
+  ├─ minutes/generator.py    # MinutesGenerator
+  └─ ui/
+      ├─ theme.py            # QSS 主题（OKLCH 调校）
+      ├─ splash.py           # SplashWindow（5 阶段进度）
+      ├─ main_window.py      # MainWindow（顶栏/左面板/字幕舞台/dock/toast）
+      ├─ overlay.py          # OverlayWindow（透明浮窗，4 主题 + 拖拽）
+      └─ app.py              # run_app（装配 + EventBus 泵）
 ```
 
 ### 数据流（运行时）
 
 ```
-PyAudioWPatch（WASAPI 回环 + 麦克风）
-  ├─ audio_queue (sys) ─┐
-  └─ mic_queue   (mic) ─┴→ 各自 LanePipeline
-        ├─ VAD 累积 → 周期 interim ASR → 分句提交（on_commit，灰色上屏）
-        ├─ VAD flush → final ASR（on_final，定色原位替换）
-        └─ 录音旁路 → _recorder（累积两路）
-  共享 ASR worker（串行推理）
-  on_final → _emit_text(lane)
-        ├─ overlay 对应栏 add_message
-        ├─ _transcript_log.log_final
-        └─ 翻译（sys→中文 恒开；mic→目标语 可配）→ 流式上屏 + set_translation
+WASAPI（环回 sys + 麦克风 mic）/ ReplaySource（测试注入）
+  ├─ sys → RingBuffer → SileroVad ─┐
+  └─ mic → RingBuffer → SileroVad ─┴→ 各自 seg_q
+        ├─ _lane_loop：drain ring → VAD 切句 → seg_q（publish "seg"）
+        ├─ _asr_worker_loop：seg → AsrWorker.transcribe（整句）
+        │     → publish "asr"（含 t_first_ms / speaker）
+        │     → 段 RMS → CoarseDiarizer.assign（说话人槽）
+        │     → SessionStore.add_line（落盘）
+        │     → _translate（fire-and-forget，不阻塞 worker）
+        └─ LlmApiClient.translate_stream（SSE 逐字）→ publish "trans"
+UI（订阅 EventBus）：
+  status → toast / splash 进度
+  asr    → 主窗口 + 浮窗 add_line（麦/扬徽标 + 原文）
+  trans  → 译文增量回填
+  trans_err / asr_err → 显式降级提示
 停止时：
-  冲刷两路 VAD（flush_remaining）
-  → _recorder.finish() 写 mix/mic/sys.wav
-  → _transcript_log.close()
-  → _sessions.close() 归档（此后零后台计算）
+  冲刷 → finalize_translations（译文补写）→ SessionStore.close() 归档
 ```
 
-### 会后手动流程
+### 进程隔离
 
-```
-会话管理窗口 → 选中会话
-  ├─ 离线精修 → _offline_diarize.diarize_wav(mix.wav)
-  │            → refined.json（[{start_ms,end_ms,spk,text}]）
-  ├─ 精修稿查看（_refine_view）→ 说话人改名（labels.json 持久化）
-  └─ 生成纪要 → 二选一：
-       A refined：refined.json + labels → generate_from_segments
-       B stream ：transcript.jsonl 回放 → generate_from_text_stream
-       → minutes.md（可导出）
-```
+ASR 推理在独立子进程（`multiprocessing` spawn + Pipe IPC + 超时），与 UI 进程零
+GIL 竞争。UI 进程纯渲染，所有数据经 EventBus 到达（QTimer 33ms 泵驱动）。
 
 ## 4. 关键设计决策
 
-### 4.1 LanePipeline（双路复用）
-把上游单路的「VAD + 增量 ASR 状态机 + 段队列」抽成 `LanePipeline` 类，
-每路一个实例（`sys` / `mic`），通过回调（`run_asr` / `asr_ready` /
-`on_commit` / `on_final`）接入宿主 App，从而**两路共享单一 ASR worker**、
-避免数百行逻辑复制。`_capture_loop` 轮询两路队列喂 VAD；`_asr_loop` 单消费者
-排空两路段队列。
+### 4.1 路线 A：VAD 切句 + 整句解码
+不做逐 chunk 增量解码（路线 B 的流式塔中文不可用），而是 VAD 切出完整句 →
+一次性整句解码。牺牲一点首字延迟换取识别质量与工程简洁。切句策略可调
+（`segment_policy`：balanced 3s / aggressive 1.5s）。
 
-### 4.2 两级显示
-- **interim**：VAD 累积 ≥ `interim_interval` 时周期跑低延迟 ASR，`yasbd` 分句后
-  提交完整句（`on_commit`），overlay 灰色即时上屏；
-- **final**：VAD 判定句子结束 → final ASR（`on_final`）→ 定色原位替换；
-- 翻译只跟随 final（省 token、防抖动）；interim 抖动靠同句覆盖自然收敛。
+### 4.2 翻译 fire-and-forget
+`_translate` 不阻塞 ASR worker（早期 `done_evt.wait()` 会让后续段堆积）。译文
+增量经 SSE 回调异步回填 UI，`_done` 时补写会话存储。
 
-### 4.3 会话与零后台计算
-停止即归档（WAV + 文字流 + 元数据），**不自动跑精修/纪要**；二者都是用户在
-（当前或历史）会话上的手动按钮动作，异步执行、可取消。会话目录布局见 README。
+### 4.3 等待态机制（用户约束 ⑤⑥）
+每个异步等待（env_check / vad_load / asr_load / api_health）都经
+`StatusMachine` 广播 `working → done/error`（含 message / eta_s），UI 的 toast 与
+splash 进度条据此显式告知用户，杜绝无声等待。
 
-### 4.4 翻译双向化
-`_emit_text(lane, ...)` 统一出口：sys 路 → 主目标语（中文，恒开）；
-mic 路 → `mic_target_language`（默认空 = 不翻译，可配如 `en`）。同源语言跳过。
+### 4.4 降级路径（用户约束）
+翻译 / 纪要**仅走 API**。API 不可达时：ASR 照常出字幕，翻译/纪要**显式报错**
+（"翻译 API 不可用，仅显示原文" / Connection refused），不静默失败。
 
 ## 5. 边缘情况与失败模式
 
-- **回环不可用** → 降级仅 mic 单路（上游 `_loopback_disabled` 机制）；纪要仍可用文字流源。
-- **whisper 模型首跑下载** → SetupWizard / ModelDownloadDialog 流程覆盖；`cache_path` 可预置。
-- **远程 ASR 断线** → 健康检查告警 + 可配置回落本地。
-- **CPU 过载** → 两路共享单 worker 串行推理 + VAD 门控；远程 ASR 为逃生通道。
-- **AI 端点不可达** → 降级仅原文 + 可导出文字流/wav 稍后提交。
-- **会话目录损坏/缺文件** → 列表标「不完整」，仍可打开现存部分。
-- **精修/纪要中途取消** → 半成品不落盘，状态回滚。
-- **空会话** → 无音频时不落盘 0 字节 WAV（`_recorder.finish` 早退）。
+- **环回不可用** → 降级仅 mic 单路；纪要仍可用文字流源。
+- **模型首跑下载** → ModelManager 断点续传 + 进度回报 splash；`MODELSCOPE_CACHE`
+  可预置。
+- **API 端点不可达** → 降级仅原文 + 显式提示（见 4.4）。
+- **CPU 过载** → 两路共享单 ASR worker 串行推理 + VAD 门控；突发负载会排队
+  （已知瓶颈，后续可做 worker 并发池）。
+- **会话目录损坏/缺文件** → 仍可打开现存部分。
+- **httpx no_proxy 含 `::1,[::1]`** → httpx 0.28 解析崩溃，`_EnvProxyFix` 上下文
+  临时归一化（已修）。
 
 ## 6. 内存预算（16G 机器）
 
 | 组件 | 估算 |
 |---|---|
-| PyQt6 + 应用 | ~0.5GB |
-| faster-whisper small int8（单实例，两路共享） | ~1GB |
-| Silero VAD ×2 | ~0.2GB |
-| PyAudioWPatch 采集 | ~0.2GB |
-| **实时运行态合计** | **~2GB** |
-| 离线精修（手动触发时才懒加载） | 峰值 ~5GB |
+| PySide6 + 应用 | ~0.5GB |
+| Qwen3-ASR 0.6B（fp32，单实例，两路共享） | ~1.5GB |
+| Silero VAD ×2（ONNX） | ~0.2GB |
+| WASAPI 采集 | ~0.2GB |
+| **实时运行态合计** | **~2.5GB** |
+| 2h 长跑估算（稳态增量 + 每句边际） | <500MB 增长 |
 
 ## 7. 假设
 
 - Windows 10/11 x64，Python 3.10–3.12，首跑有网。
-- 实时 = interim 近零延迟 + final 1-3 秒定稿；翻译只跟 final。
-- 实时界面「🎤自己 / 🔊对方」两路；逐说话人分离只在手动离线精修时做。
-- 停止后默认零后台计算；精修/纪要全手动。
-- 保留 LiveTranslate MIT 许可与署名。
+- 实时 = 整句解码 1-3 秒出文本；翻译只跟 final（省 token、防抖动）。
+- 实时界面「🎤自己 / 🔊对方」两路；说话人粗分实时做，精修可选。
+- 停止后会话归档；纪要为用户手动触发。
 
 ## 8. 验收标准
 
-1. 纯逻辑自测全绿（两级显示事件、会话 CRUD、双源纪要、labels 持久化）。
-2. overlay 透明置顶、点击穿透、双栏两级显示（interim 灰 → final 定色原位替换）。
-3. 停止后零自动计算；历史会话可手动补做精修/纪要并落盘。
-4. 精修稿窗口可把「说话人N」改为真实姓名，保存后全量稿与纪要即时更新且持久。
-5. 设置可切换本地 whisper / FunASR 系 / 远程 ASR。
-6. 完整流程：开始 → 双路实时（两级）+ 翻译 → 停止 → 会话归档 → 手动精修 →
-   改名 → 生成纪要（两源各一次）→ 导出 minutes.md。
-7. 实时运行态内存 < 4GB。
+1. 全链路自测全绿（`test_e2e_full`：VAD→ASR→翻译）。
+2. 双路径（`test_p4_e2e`）：API 在线 / 宕机，后者 ASR 照常 + 翻译/纪要显式报错。
+3. 1x 实时（`test_realtime_1x`）：83s 双通道长跑 0 错误，双通道均出声。
+4. 硬指标（`test_acceptance`）：冷启动 <15s、首字 p50<1.0/p95<1.5、2h 内存 <500MB。
+5. UI（`test_ui_smoke`）：三窗口实例化 + 事件注入 + 截图验证。
+6. 完整流程：启动 → 双通道实时 + 翻译 → 停止 → 会话归档 → 生成纪要 → 导出。

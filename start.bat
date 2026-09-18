@@ -1,27 +1,14 @@
 @echo off
-cd /d "%~dp0"
-set PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%
-
-if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found.
-    echo Please run install.bat first to set up the environment.
-    echo.
-    pause
-    exit /b 1
+REM RecTheWord v2 启动脚本：环境缺失时自动衔接 install.ps1
+cd /d %~dp0
+if not exist .venv\Scripts\python.exe (
+    echo [start] 未检测到运行环境，正在自动安装...
+    powershell -ExecutionPolicy Bypass -File install.ps1
+    if errorlevel 1 (
+        echo [start] 安装失败，请查看上方日志。
+        pause
+        exit /b 1
+    )
 )
-
-if not exist ".venv\.livetranslate-ready" (
-    echo [ERROR] Virtual environment setup is incomplete.
-    echo Please run install.bat again to finish installing and verifying dependencies.
-    echo.
-    pause
-    exit /b 1
-)
-
-echo Starting RecTheWord...
 .venv\Scripts\python.exe main.py
-if errorlevel 1 (
-    echo.
-    echo [ERROR] RecTheWord exited with an error.
-    pause
-)
+if errorlevel 1 pause
