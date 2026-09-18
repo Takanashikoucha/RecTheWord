@@ -38,18 +38,34 @@ class SessionStore:
         if self.current:
             (self.current / "minutes.md").write_text(md, encoding="utf-8")
 
+    def iter_transcript(self) -> list[dict]:
+        """读出已落盘的 transcript 行（说话人去重用）。"""
+        if not self.current:
+            return []
+        f = self.current / "transcript.jsonl"
+        if not f.exists():
+            return []
+        out = []
+        for raw in f.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+        return out
+
     def close(self) -> None:
         if self._transcript_f:
             self._transcript_f.close()
             self._transcript_f = None
 
     def export_markdown(self) -> str:
+        """导出 transcript 为 markdown 文件，返回文件路径（无会话时返回空串）。"""
         if not self.current:
             return ""
         f = self.current / "transcript.jsonl"
         if not f.exists():
             return ""
-        lines = []
+        lines = ["# 会议记录\n"]
         for raw in f.read_text(encoding="utf-8").splitlines():
             d = json.loads(raw)
             t = time.strftime("%H:%M:%S", time.localtime(d["ts"] / 1000))
@@ -57,4 +73,6 @@ class SessionStore:
             lines.append(f"- `{t}` {spk} {d['text']}")
             if d.get("translated"):
                 lines.append(f"  - 译：{d['translated']}")
-        return "\n".join(lines)
+        out = self.current / "transcript.md"
+        out.write_text("\n".join(lines), encoding="utf-8")
+        return str(out)

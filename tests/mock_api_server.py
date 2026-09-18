@@ -21,10 +21,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 def fake_translate(text: str, src: str, tgt: str) -> str:
-    """确定性伪翻译：测试只需验证链路与时序，不需要真翻译质量。"""
-    if "budget" in text.lower() or "预算" in text:
-        return f"[{tgt}] 预算相关：{text[:20]}"
-    return f"[{tgt}] {text[:30]}"
+    """确定性伪翻译：测试只需验证链路与时序，不需要真翻译质量。
+
+    刻意与原文明显不同（【译】前缀 + 改写句式），让用户一眼看出「这是译文」。
+    """
+    t = text.strip()
+    if "budget" in t.lower() or "预算" in t:
+        return f"【译】关于预算：{t[:24]}"
+    if t:
+        return f"【译】（{tgt}）{t[:24]}"
+    return f"【译】（{tgt}）"
 
 
 class Handler(BaseHTTPRequestHandler):

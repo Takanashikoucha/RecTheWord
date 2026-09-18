@@ -24,6 +24,7 @@ from ..core.events import EventBus
 from ..core.status_machine import StatusMachine
 from ..audio.ring_buffer import RingBuffer
 from ..audio.replay_source import ReplaySource
+from ..audio.devices import DeviceManager, WasapiSource
 from ..vad.silero import SileroVad, SpeechSegment
 from ..asr.worker import AsrWorkerClient
 from ..llm_api.client import LlmApiClient
@@ -39,6 +40,7 @@ class LaneState:
     ring: RingBuffer
     vad: SileroVad
     rep: ReplaySource | None = None
+    wasapi: WasapiSource | None = None
     seg_q: "queue.Queue[SpeechSegment]" = field(default_factory=queue.Queue)
 
 
@@ -55,6 +57,7 @@ class Pipeline:
         self.lanes: list[LaneState] = []
         self.asr: AsrWorkerClient | None = None
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._workers: list[threading.Thread] = []
         self.stats = {"segs": 0, "asr_done": 0, "trans_done": 0, "errors": 0}
         # P4：会话存储 + 实时粗分说话人
@@ -75,8 +78,9 @@ class Pipeline:
     # ---------- 启动 ----------
 
     def setup_lanes(self) -> None:
-        """按 config 建立各声道（wasapi 或 replay 注入）。"""
+        """按 config 建立各声道（wasapi 采集 或 replay 注入）。"""
         a = self.cfg.audio
+        self.device_mgr = DeviceManager()
         pairs = [("mic", a.replay_mic), ("sys", a.replay_sys)]
         for name, replay_file in pairs:
             if a.source == "replay" and not replay_file:
@@ -90,13 +94,33 @@ class Pipeline:
                             min_silence_ms=self.cfg.vad.min_silence_ms,
                             max_speech_ms=max_speech)
             lane = LaneState(name=name, ring=ring, vad=vad)
-            if a.source == "replay" and replay_file:
+            if a.source == "wasapi":
+                dev_idx = getattr(a, f"{name}_device", None)
+                lane.wasapi = WasapiSource(ring, name, device_index=dev_idx,
+                                          device_manager=self.device_mgr)
+            elif a.source == "replay" and replay_file:
                 from pathlib import Path
                 p = Path(replay_file)
                 if not p.is_absolute():
                     p = Path(__file__).resolve().parent.parent.parent / p
                 lane.rep = ReplaySource(ring, p, speed=a.replay_speed)
             self.lanes.append(lane)
+
+    # ---- 设备管理（UI 调用：刷新 / 热切换）----
+
+    def list_devices(self) -> dict[str, list[dict]]:
+        return self.device_mgr.enumerate()
+
+    def refresh_devices(self) -> dict[str, list[dict]]:
+        return self.device_mgr.refresh()
+
+    def switch_device(self, lane: str, device_index: int | None) -> None:
+        """运行时热切换某路设备（自动重连，不打断下游 VAD）。"""
+        for l in self.lanes:
+            if l.name == lane and l.wasapi:
+                l.wasapi.switch(device_index)
+                return
+        raise ValueError(f"unknown lane or not wasapi: {lane}")
 
     def _vad_path(self):
         from pathlib import Path
@@ -131,6 +155,21 @@ class Pipeline:
             self._workers.append(t)
             if lane.rep:
                 lane.rep.start()
+            if lane.wasapi:
+                lane.wasapi.start()
+
+    def pause(self) -> None:
+        """暂停：丢弃音频（VAD 不积累陈旧语音），ASR 队列排空后空闲。"""
+        self._paused.set()
+
+    def resume(self) -> None:
+        """继续：清空 VAD 内部状态，从头切句。"""
+        for l in self.lanes:
+            try:
+                l.vad.reset()
+            except Exception:
+                pass
+        self._paused.clear()
 
     def stop(self) -> None:
         self._stop.set()
@@ -161,8 +200,12 @@ class Pipeline:
     # ---------- 每声道循环 ----------
 
     def _lane_loop(self, lane: LaneState) -> None:
-        """消费 RingBuffer → VAD 切句 → 送入 ASR 队列。"""
+        """消费 RingBuffer → VAD 切句 → 送入 ASR 队列。暂停时丢弃音频。"""
         while not self._stop.is_set():
+            if self._paused.is_set():
+                lane.ring.drain()  # 丢弃，避免恢复后处理陈旧语音
+                time.sleep(0.05)
+                continue
             data = lane.ring.drain()
             if data:
                 for seg in lane.vad.feed(data, lane.name):

@@ -60,7 +60,9 @@ def run_app(cfg, bus) -> int:
     app.processEvents()
 
     # ---- 4. 主窗口 + 浮窗 ----
-    main_win = MainWindow(bus)
+    main_win = MainWindow(bus, model_path=str(model_dir),
+                         target_lang=getattr(cfg.ui, "target_lang", "zh"),
+                         pipeline=pipe)
     main_win.show()
 
     overlay = OverlayWindow()
@@ -74,21 +76,31 @@ def run_app(cfg, bus) -> int:
     # 浮窗事件 → 主窗口联动
     overlay.hide_requested.connect(main_win.close)
 
-    # 事件桥接：asr/trans → 浮窗
-    from PySide6.QtCore import QObject, Signal
-    bridge = QObject()
+    # 事件桥接：asr/trans → 浮窗（字幕 + 延迟 + 译文回填）
+    ov_lines: dict[str, object] = {}
 
     def on_asr(p) -> None:
         line = overlay.add_line(p["lane"])
         line.set_interim(p["text"])
-        main_win._line_refs[p["seg_id"]] = None  # 主窗口自己也会画
+        ov_lines[p["seg_id"]] = line
+        overlay.set_latency(p.get("t_first_ms"))  # 延迟显示
 
     def on_trans(p) -> None:
-        # 找到浮窗最后一条对应行的译文追加
-        pass  # 浮窗译文回填在 P4 完善（主窗口已实时）
+        line = ov_lines.get(p["seg_id"])
+        if line:
+            line.append_translation(p["delta"])
+
+    def on_trans_err(p) -> None:
+        line = ov_lines.get(p["seg_id"])
+        if line:
+            line.append_translation(f" ⚠{p.get('error', '')}")
 
     bus.subscribe("asr", on_asr)
     bus.subscribe("trans", on_trans)
+    bus.subscribe("trans_err", on_trans_err)
+
+    # 录音状态 → 浮窗状态栏（不再一直停在「等待语音…」）
+    overlay.set_running(True)
 
     # ---- EventBus 泵 ----
     timer = QTimer()

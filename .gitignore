@@ -43,6 +43,12 @@ Thumbs.db
 .venvtest/
 tests/screenshots/
 tests/demo_shots/
+tests/video_frames/
+tests/e2e_demo.mp4
+# Generated TTS audio (regenerable via tests/make_*.py) — keep repo small.
+# script.txt (原文) is kept tracked so recognition can be judged offline.
+tests/fixtures/*/*.wav
+tests/fixtures/*/*.mp3
 
 # Agent state
 .dsh-state.md

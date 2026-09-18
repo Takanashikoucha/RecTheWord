@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QProgressBar, QPushButton,
                                QScrollArea, QStackedWidget, QVBoxLayout,
@@ -17,10 +17,17 @@ from .theme import MAIN_QSS
 
 
 class LaneCard(QFrame):
+    """声道卡片：名称 + 开关 + 设备下拉（可刷新 / 运行时切换）。"""
+
+    refresh_requested = Signal(str)      # 参数：lane 名
+    device_switched = Signal(str, object)  # 参数：lane 名, device_index(None=默认)
+
     def __init__(self, name: str, sub: str, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("laneCard")
         self.setObjectName(f"lane{'Mic' if name == 'mic' else 'Sys'}")
+        self._lane_name = name
+        self._devices: list[dict] = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(8)
@@ -46,15 +53,42 @@ class LaneCard(QFrame):
         lbl.setObjectName("fieldLbl")
         dev_row.addWidget(lbl)
         self.device = QComboBox()
-        self.device.addItems(["系统默认"])
+        self.device.addItem("系统默认")
+        self.device.currentIndexChanged.connect(self._on_device_changed)
         dev_row.addWidget(self.device, 1)
+        self.refresh_btn = QPushButton("⟳")
+        self.refresh_btn.setObjectName("iconBtn")
+        self.refresh_btn.setToolTip("刷新设备列表")
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        dev_row.addWidget(self.refresh_btn)
         lay.addLayout(dev_row)
+
+    # ---- 设备列表 / 刷新 / 切换 ----
+
+    def set_devices(self, devices: list[dict]) -> None:
+        """填充设备下拉（第一项恒为「系统默认」= index None）。"""
+        self._devices = devices
+        self.device.blockSignals(True)
+        self.device.clear()
+        self.device.addItem("系统默认")
+        for d in devices:
+            self.device.addItem(d["name"], d["index"])
+        self.device.blockSignals(False)
+
+    def _on_refresh_clicked(self) -> None:
+        self.refresh_requested.emit(self._lane_name)
+
+    def _on_device_changed(self, idx: int) -> None:
+        dev_idx = None if idx <= 0 else self.device.itemData(idx)
+        self.device_switched.emit(self._lane_name, dev_idx)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, bus, model_path: str, target_lang: str = "zh") -> None:
+    def __init__(self, bus, model_path: str, target_lang: str = "zh",
+                 pipeline=None) -> None:
         super().__init__()
         self.bus = bus
+        self.pipeline = pipeline  # 用于设备刷新 / 热切换（可选，测试可不传）
         self.setWindowTitle("RecTheWord — 实时字幕与翻译")
         self.resize(1280, 760)
         self.setMinimumSize(1024, 640)
@@ -62,6 +96,8 @@ class MainWindow(QMainWindow):
         self._t0 = time.monotonic()
         self._sentence_count = 0
         self._line_refs: dict[str, QLabel] = {}
+        self._paused = False
+        self._stopped = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -125,20 +161,22 @@ class MainWindow(QMainWindow):
         brand.setObjectName("brandLabel")
         lay.addWidget(brand)
 
-        pill = QLabel("● 录音中")
-        pill.setObjectName("sessionPill")
-        lay.addWidget(pill)
+        self.session_pill = QLabel("● 录音中")
+        self.session_pill.setObjectName("sessionPillLive")
+        lay.addWidget(self.session_pill)
         self.timer_lbl = QLabel("00:00:00")
         self.timer_lbl.setObjectName("timerLabel")
         lay.addWidget(self.timer_lbl)
         lay.addStretch(1)
 
-        for text, obj in (("导出记录", "exportBtn"), ("生成会议纪要", "minutesBtn")):
-            b = QPushButton(text)
-            b.setObjectName(obj)
-            if obj == "minutesBtn":
-                b.setObjectName("primaryBtn")
-            lay.addWidget(b)
+        tb_exp = QPushButton("导出记录")
+        tb_exp.setObjectName("exportBtn")
+        tb_exp.clicked.connect(self._on_export)
+        lay.addWidget(tb_exp)
+        tb_min = QPushButton("生成会议纪要")
+        tb_min.setObjectName("primaryBtn")
+        tb_min.clicked.connect(self._on_generate_minutes)
+        lay.addWidget(tb_min)
         return bar
 
     def _build_left(self) -> QWidget:
@@ -156,6 +194,11 @@ class MainWindow(QMainWindow):
         self.lane_sys = LaneCard("扬声器", "WASAPI 环回 · 对方声音")
         lay.addWidget(self.lane_mic)
         lay.addWidget(self.lane_sys)
+        # 设备刷新 / 运行时热切换
+        for card in (self.lane_mic, self.lane_sys):
+            card.refresh_requested.connect(self._on_refresh_devices)
+            card.device_switched.connect(self._on_device_switched)
+        self._load_devices()
 
         lay.addSpacing(8)
         for title in ("识别引擎", "说话人分离", "字幕外观"):
@@ -170,11 +213,13 @@ class MainWindow(QMainWindow):
         sep_row = QHBoxLayout()
         sep_row.addWidget(QLabel("会后聚类标注"))
         sep_row.addStretch(1)
-        sep_toggle = QPushButton("●")
-        sep_toggle.setObjectName("iconBtn")
-        sep_toggle.setCheckable(True)
-        sep_toggle.setChecked(True)
-        sep_row.addWidget(sep_toggle)
+        self.sep_toggle = QPushButton("●")
+        self.sep_toggle.setObjectName("iconBtn")
+        self.sep_toggle.setCheckable(True)
+        self.sep_toggle.setChecked(True)
+        self.sep_toggle.setToolTip("开启/关闭会后离线精修说话人聚类")
+        self.sep_toggle.toggled.connect(self._on_sep_toggled)
+        sep_row.addWidget(self.sep_toggle)
         lay.addLayout(sep_row)
 
         note = QLabel("实时阶段按能量粗分，会议结束后离线精修")
@@ -185,10 +230,95 @@ class MainWindow(QMainWindow):
         self.font_spin = QComboBox()
         self.font_spin.addItems(["24 px", "28 px", "32 px"])
         self.font_spin.setCurrentIndex(1)
+        self.font_spin.currentIndexChanged.connect(self._on_font_changed)
         lay.addWidget(self.font_spin)
 
         lay.addStretch(1)
         return panel
+
+    # ---- 设备管理（刷新 / 运行时热切换）----
+
+    def _load_devices(self) -> None:
+        """初始加载设备列表（非 Windows / 无 pipeline 时保持「系统默认」）。"""
+        if self.pipeline is None:
+            return
+        try:
+            devs = self.pipeline.list_devices()
+        except Exception:
+            return
+        self.lane_mic.set_devices(devs.get("mic", []))
+        self.lane_sys.set_devices(devs.get("sys", []))
+
+    def _on_refresh_devices(self, _lane: str) -> None:
+        """⟳ 按钮：重新枚举设备（拔插耳机 / 切换输出后）。"""
+        if self.pipeline is None:
+            return
+        try:
+            devs = self.pipeline.refresh_devices()
+        except Exception as e:
+            self._toast(f"设备刷新失败：{e}")
+            return
+        self.lane_mic.set_devices(devs.get("mic", []))
+        self.lane_sys.set_devices(devs.get("sys", []))
+        self._toast("设备列表已刷新")
+
+    def _on_device_switched(self, lane: str, device_index) -> None:
+        """下拉切换：运行时热切换（自动重连，不打断下游 VAD）。"""
+        if self.pipeline is None:
+            return
+        try:
+            self.pipeline.switch_device(lane, device_index)
+            name = "系统默认" if device_index is None else f"设备 #{device_index}"
+            self._toast(f"{lane} 已切换到 {name}")
+        except Exception as e:
+            self._toast(f"切换失败：{e}")
+
+    # ---- 导出 / 纪要 / 聚类 / 字号 ----
+
+    def _on_export(self) -> None:
+        """导出记录：markdown 落盘 + toast 提示路径。"""
+        if self.pipeline is None:
+            self._toast("导出失败：管线未连接")
+            return
+        try:
+            path = self.pipeline.store.export_markdown()
+            self._toast(f"已导出：{path}")
+        except Exception as e:
+            self._toast(f"导出失败：{e}")
+
+    def _on_generate_minutes(self) -> None:
+        """生成会议纪要：流式进度（等待态显式告知），完成后落盘。"""
+        if self.pipeline is None:
+            self._toast("纪要失败：管线未连接")
+            return
+        self._toast("正在生成会议纪要…")
+
+        def _delta(d: str) -> None:
+            pass  # 增量累积在 generator 内部
+
+        def _done() -> None:
+            self._toast("✓ 会议纪要已生成并保存")
+
+        def _err(e) -> None:
+            self._toast(f"纪要失败：{e}")
+
+        try:
+            self.pipeline.generate_minutes(_delta, _done, _err)
+        except Exception as e:
+            self._toast(f"纪要失败：{e}")
+
+    def _on_sep_toggled(self, checked: bool) -> None:
+        """会后聚类标注开关。"""
+        if self.pipeline is not None:
+            self.pipeline.diarizer.enabled = checked
+        self._toast("会后聚类已开启" if checked else "会后聚类已关闭")
+
+    def _on_font_changed(self, idx: int) -> None:
+        """字幕字号（透传给浮窗）。"""
+        sizes = (24, 28, 32)
+        if hasattr(self, "_overlay_ref"):
+            self._overlay_ref.set_font_size(sizes[idx])
+        self._toast(f"字幕字号 {sizes[idx]} px")
 
     def _build_right(self) -> QWidget:
         w = QWidget()
@@ -247,10 +377,18 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(20, 0, 20, 0)
         lay.setSpacing(14)
 
-        play = QPushButton("❚❚")
-        play.setObjectName("playBtn")
-        play.setCheckable(True)
-        lay.addWidget(play)
+        self.play_btn = QPushButton("❚❚")
+        self.play_btn.setObjectName("playBtn")
+        self.play_btn.setCheckable(True)
+        self.play_btn.setToolTip("暂停 / 继续")
+        self.play_btn.toggled.connect(self._on_pause_toggled)
+        lay.addWidget(self.play_btn)
+
+        self.stop_btn = QPushButton("■")
+        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setToolTip("停止（结束会话并归档）")
+        self.stop_btn.clicked.connect(self._on_stop_clicked)
+        lay.addWidget(self.stop_btn)
 
         for k, v in (("时长", "00:00"), ("句子数", "0"), ("说话人", "-"), ("磁盘", "0 MB")):
             stat = QVBoxLayout()
@@ -266,15 +404,67 @@ class MainWindow(QMainWindow):
                 self.sent_cnt = vl
             if k == "时长":
                 self.dock_timer = vl
+            if k == "说话人":
+                self.spk_cnt = vl
+            if k == "磁盘":
+                self.disk_lbl = vl
         lay.addStretch(1)
         exp = QPushButton("导出记录")
+        exp.clicked.connect(self._on_export)
         lay.addWidget(exp)
         mins = QPushButton("生成会议纪要")
         mins.setObjectName("primaryBtn")
+        mins.clicked.connect(self._on_generate_minutes)
         lay.addWidget(mins)
         return dock
 
     # ---------- 事件处理 ----------
+
+    # ---- 录音控制（暂停 / 停止）----
+
+    def _set_pill(self, text: str, obj: str) -> None:
+        self.session_pill.setText(text)
+        self.session_pill.setObjectName(obj)
+        self.session_pill.style().unpolish(self.session_pill)
+        self.session_pill.style().polish(self.session_pill)
+
+    def _on_pause_toggled(self, checked: bool) -> None:
+        """暂停/继续：冻结音频采集（VAD 不切句），UI 状态同步。"""
+        self._paused = checked
+        if self.pipeline is not None:
+            try:
+                if checked:
+                    self.pipeline.pause()
+                else:
+                    self.pipeline.resume()
+            except Exception as e:
+                self._toast(f"{'暂停' if checked else '继续'}失败：{e}")
+        self._set_pill("❚❚ 已暂停", "sessionPillPaused")
+        self._toast("已暂停" if checked else "已继续")
+        if not checked:
+            self._set_pill("● 录音中", "sessionPillLive")
+
+    def _on_stop_clicked(self) -> None:
+        """停止：结束会话 + 归档（此后零后台计算）。"""
+        self._stopped = True
+        self.play_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
+        self._set_pill("■ 已停止", "sessionPillStopped")
+        if self.pipeline is not None:
+            try:
+                self.pipeline.stop()
+            except Exception as e:
+                self._toast(f"停止失败：{e}")
+        self._toast("已停止 · 会话已归档")
+
+    def _toast(self, text: str) -> None:
+        """瞬时提示（设备刷新 / 切换结果），3 秒后收起。"""
+        self.toast.show()
+        self.toast_msg.setText(text)
+        self.toast_eta.setText("")
+        self.toast.adjustSize()
+        self.toast.move(20, 60)
+        QTimer.singleShot(3000, self.toast.hide)
 
     def on_status(self, payload) -> None:
         op, _seq, st = payload
@@ -346,12 +536,25 @@ class MainWindow(QMainWindow):
 
     def _trim_lines(self) -> None:
         while self.sub_layout.count() > 15:
-            item = self.sub_layout.itemAt(1)
+            item = self.sub_layout.takeAt(1)
             if item and item.widget():
                 item.widget().deleteLater()
-                self.sub_layout.removeItemAt(1)
 
     def _tick(self) -> None:
         s = int(time.monotonic() - self._t0)
         self.timer_lbl.setText(f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}")
         self.dock_timer.setText(f"{s // 60:02d}:{s % 60:02d}")
+        # 说话人数 / 磁盘占用（真实值）
+        if self.pipeline is not None:
+            try:
+                n_spk = len(set(
+                    d.get("speaker") for d in self.pipeline.store.iter_transcript()
+                    if d.get("speaker")))
+                if n_spk:
+                    self.spk_cnt.setText(str(n_spk))
+                sess = self.pipeline.store.current
+                if sess and sess.exists():
+                    size = sum(f.stat().st_size for f in sess.rglob("*") if f.is_file())
+                    self.disk_lbl.setText(f"{size / 1024 / 1024:.1f} MB")
+            except Exception:
+                pass

@@ -13,6 +13,7 @@ class CoarseDiarizer:
     def __init__(self, energy_jump_db: float = 6.0, pause_ms: int = 2500) -> None:
         self.energy_jump_db = energy_jump_db
         self.pause_ms = pause_ms
+        self.enabled = True  # 会后聚类标注开关（UI 可控）
         self._slots: dict[str, dict] = {}
         self._counter = 0
 

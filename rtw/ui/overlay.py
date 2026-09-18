@@ -61,6 +61,13 @@ class SubLineWidget(QFrame):
     def append_translation(self, delta: str) -> None:
         self.tr.setText(self.tr.text() + delta)
 
+    def set_font_size(self, px: int) -> None:
+        from PySide6.QtGui import QFont
+        f = QFont()
+        f.setPixelSize(px)
+        self.src.setFont(f)
+        self.tr.setFont(f)
+
 
 class OverlayWindow(QWidget):
     """顶层透明浮窗。"""
@@ -74,10 +81,11 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(OVERLAY_QSS)
-        self.resize(980, 220)
+        self.resize(980, 340)  # 上下两分区需要更高
         self._drag_pos: QPoint | None = None
         self._theme = "glass"
         self._clock_start = time.monotonic()
+        self._last_latency: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -116,45 +124,82 @@ class OverlayWindow(QWidget):
             head.addWidget(b)
         lay.addLayout(head)
 
-        # 字幕区（垂直滚动，最新在下）
+        # 字幕区：上下两分区（🎤 麦 上 / 🔊 扬 下），各自独立滚动
         # 关键：scroll 自身、viewport、container 三层都要关掉自动填充背景，
         # 否则会盖住浮窗的半透明底（白色块 bug）
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setAutoFillBackground(False)
-        scroll.viewport().setAutoFillBackground(False)
-        container = QWidget()
-        container.setAutoFillBackground(False)
-        self.lines_layout = QVBoxLayout(container)
-        self.lines_layout.setSpacing(8)
-        self.lines_layout.addStretch(1)
-        scroll.setWidget(container)
-        lay.addWidget(scroll, 1)
-        self.scroll = scroll
+        self.sections: dict[str, dict] = {}
+        for sec_name, sec_title, sec_obj in (
+            ("mic", "🎤 麦克风", "secMic"),
+            ("sys", "🔊 扬声器", "secSys"),
+        ):
+            sec_head = QLabel(sec_title)
+            sec_head.setObjectName(sec_obj)
+            lay.addWidget(sec_head)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setAutoFillBackground(False)
+            scroll.viewport().setAutoFillBackground(False)
+            container = QWidget()
+            container.setAutoFillBackground(False)
+            lines_layout = QVBoxLayout(container)
+            lines_layout.setContentsMargins(0, 0, 0, 0)
+            lines_layout.setSpacing(6)
+            lines_layout.addStretch(1)
+            scroll.setWidget(container)
+            lay.addWidget(scroll, 1)
+            self.sections[sec_name] = {"layout": lines_layout, "scroll": scroll}
+        # 向后兼容：lines_layout 指向 mic 区
+        self.lines_layout = self.sections["mic"]["layout"]
+        self.scroll = self.sections["mic"]["scroll"]
 
         # 底部状态
-        self.status_lbl = QLabel("等待语音…")
+        self.status_lbl = QLabel("待机")
         self.status_lbl.setObjectName("ovMeta")
         lay.addWidget(self.status_lbl)
 
     # ---- 对外接口（EventBus 驱动）----
 
     def add_line(self, lane: str) -> SubLineWidget:
+        sec = self.sections.get(lane, self.sections["mic"])
+        layout = sec["layout"]
         w = SubLineWidget(lane)
-        self.lines_layout.insertWidget(self.lines_layout.count() - 1, w)
-        # 限制条数
-        while self.lines_layout.count() > 9:
-            old = self.lines_layout.itemAt(1).widget()
+        layout.insertWidget(layout.count() - 1, w)
+        # 每区限 5 条
+        while layout.count() > 6:
+            item = layout.takeAt(1)
+            old = item.widget() if item else None
             if old:
                 old.deleteLater()
-                self.lines_layout.removeItemAt(1)
-        self.scroll.verticalScrollBar().setValue(
-            self.scroll.verticalScrollBar().maximum())
+        sec["scroll"].verticalScrollBar().setValue(
+            sec["scroll"].verticalScrollBar().maximum())
         return w
 
     def set_status(self, text: str) -> None:
         self.status_lbl.setText(text)
+
+    def set_latency(self, ms: int | None) -> None:
+        """更新延迟显示（最近一段的端到端延迟）。"""
+        self._last_latency = ms
+
+    def set_font_size(self, px: int) -> None:
+        """字幕字号（主窗口字号选择器透传）。"""
+        self._font_px = px
+        for sec in self.sections.values():
+            for i in range(sec["layout"].count()):
+                w = sec["layout"].itemAt(i).widget()
+                if isinstance(w, SubLineWidget):
+                    w.set_font_size(px)
+
+    def set_running(self, running: bool, paused: bool = False) -> None:
+        """录音状态 → 状态栏文案（纯状态词，不与「等待语音」矛盾）。"""
+        if not running:
+            self.set_status("已停止")
+        elif paused:
+            self.set_status("已暂停")
+        else:
+            self.set_status("● 录音中")
 
     def set_theme(self, theme: str) -> None:
         if theme not in THEMES:
@@ -178,4 +223,5 @@ class OverlayWindow(QWidget):
     def tick_clock(self) -> None:
         s = int(time.monotonic() - self._clock_start)
         clock = f"{s // 60:02d}:{s % 60:02d}"
-        self.meta.setText(f"延迟 <b>-</b> · {clock}")
+        lat = f"<b>{self._last_latency}</b>" if self._last_latency is not None else "<b>-</b>"
+        self.meta.setText(f"延迟 {lat} ms · {clock}")

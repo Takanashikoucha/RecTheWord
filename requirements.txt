@@ -8,3 +8,4 @@ httpx
 pyyaml
 PySide6
 modelscope
+pyaudiowpatch; platform_system == "Windows"   # WASAPI 采集/环回（设备枚举 + 热切换）

@@ -28,8 +28,12 @@ QMainWindow, QDialog {{ background: {TOKENS['bg']}; }}
 #logoBox {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
              stop:0 {TOKENS['grad1']}, stop:1 {TOKENS['grad2']}); border-radius: 8px; }}
 #logoText {{ color: #0b0e13; font-weight: 800; font-size: 13px; }}
-#sessionPill {{ background: {TOKENS['panel2']}; border: 1px solid {TOKENS['hair']};
-               border-radius: 999px; padding: 4px 12px; }}
+#sessionPillLive {{ background: rgba(255,77,79,.14); border: 1px solid rgba(255,77,79,.4);
+               border-radius: 999px; padding: 4px 12px; color: #ff6b6b; font-weight: 600; }}
+#sessionPillPaused {{ background: rgba(255,193,7,.14); border: 1px solid rgba(255,193,7,.4);
+               border-radius: 999px; padding: 4px 12px; color: #ffc53d; font-weight: 600; }}
+#sessionPillStopped {{ background: {TOKENS['panel2']}; border: 1px solid {TOKENS['hair']};
+               border-radius: 999px; padding: 4px 12px; color: rgba(255,255,255,.4); }}
 #timerLabel {{ font-family: Consolas,monospace; }}
 
 /* ---- 按钮 ---- */
@@ -145,6 +149,10 @@ QFrame#ovLine {{ background: transparent; }}
             border-radius: 6px; font-weight: 700; font-size: 10px; padding: 3px 0; }}
 #ovTagSys {{ background: rgba(167,139,250,.18); color: {TOKENS['sys']};
             border-radius: 6px; font-weight: 700; font-size: 10px; padding: 3px 0; }}
+#secMic {{ color: {TOKENS['mic']}; font-size: 11px; font-weight: 700;
+         letter-spacing: 1px; margin-top: 4px; }}
+#secSys {{ color: {TOKENS['sys']}; font-size: 11px; font-weight: 700;
+         letter-spacing: 1px; margin-top: 4px; }}
 #ovSrc {{ font-size: 22px; font-weight: 600; color: #fff; }}
 #ovSrcInterim {{ font-size: 22px; color: rgba(255,255,255,.55); }}
 #ovTr {{ font-size: 14.5px; color: rgba(255,255,255,.62); }}
