@@ -34,6 +34,8 @@ QMainWindow, QDialog {{ background: {TOKENS['bg']}; }}
                border-radius: 999px; padding: 4px 12px; color: #ffc53d; font-weight: 600; }}
 #sessionPillStopped {{ background: {TOKENS['panel2']}; border: 1px solid {TOKENS['hair']};
                border-radius: 999px; padding: 4px 12px; color: rgba(255,255,255,.4); }}
+#sessionPillIdle {{ background: transparent; border: 1px dashed {TOKENS['hair']};
+               border-radius: 999px; padding: 4px 12px; color: rgba(255,255,255,.45); }}
 #timerLabel {{ font-family: Consolas,monospace; }}
 
 /* ---- 按钮 ---- */

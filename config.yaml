@@ -1,10 +1,11 @@
 # RecTheWord v2 配置（锚定仓库根）
 audio:
-  source: replay            # wasapi | replay（测试注入）
+  source: wasapi            # wasapi（生产默认）| replay（仅测试注入）
   mic_device: null
   sys_device: null
   sample_rate: 16000
   chunk_ms: 32
+  # replay 字段仅测试用（source=replay 时生效）
   replay_mic: tests/fixtures/meeting_sim/zh.wav
   replay_sys: tests/fixtures/meeting_sim/en.wav
   replay_speed: 1.0

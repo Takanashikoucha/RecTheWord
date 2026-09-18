@@ -25,19 +25,18 @@ log = logging.getLogger("rtw.main")
 def main() -> int:
     from rtw.core.config import load_config
     from rtw.core.events import EventBus
-    from rtw.core.status_machine import StatusMachine
     from rtw.core.model_manager import ModelManager
 
     cfg = load_config()
     bus = EventBus()
 
-    # splash 阶段 1：环境检查
-    sm_env = StatusMachine(bus, "boot:env")
-    sm_env.begin("检查运行环境")
-    sm_env.finish()
-
-    # splash 阶段 2：模型就位
+    # splash 阶段 1：确保模型就位（ModelScope，含 ASR + VAD）
     mm = ModelManager(cfg.models_dir(), bus)
+    try:
+        mm.ensure("qwen3_asr")
+    except Exception as e:  # noqa: BLE001
+        log.error("qwen3_asr 模型缺失：%s（请先运行 install.ps1）", e)
+        return 1
     try:
         mm.ensure("silero_vad")
     except Exception as e:  # noqa: BLE001

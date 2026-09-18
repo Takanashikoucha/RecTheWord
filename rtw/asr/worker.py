@@ -21,8 +21,9 @@ log = logging.getLogger(__name__)
 
 def _child_main(conn) -> None:
     """子进程入口：保持独立，避免 fork 继承父进程状态。"""
+    import os
     import torch
-    torch.set_num_threads(8)
+    torch.set_num_threads(os.cpu_count() or 4)  # 默认自适应；load 时按 config 覆盖
     try:
         from qwen_asr import Qwen3ASRModel
     except Exception as e:  # noqa: BLE001

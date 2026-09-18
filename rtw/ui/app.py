@@ -39,7 +39,7 @@ def run_app(cfg, bus) -> int:
     sm_env = StatusMachine(bus, "env_check")
     sm_env.begin("检查模型文件…")
     app.processEvents()
-    model_dir = APP_ROOT / ".modelscope_cache/models/Qwen--Qwen3-ASR-0.6B/snapshots/master"
+    model_dir = APP_ROOT / "models" / "Qwen3-ASR-0.6B"
     vad_path = APP_ROOT / "models/silero_vad/silero_vad.onnx"
     if not model_dir.exists() or not vad_path.exists():
         sm_env.error("模型文件缺失，请先运行 install.ps1")
@@ -48,16 +48,20 @@ def run_app(cfg, bus) -> int:
     sm_env.finish("环境就绪")
     app.processEvents()
 
-    # ---- 3. pipeline 启动（内部广播 asr_load / api_health 状态）----
-    api = LlmApiClient(cfg.api.base_url, cfg.api.api_key, cfg.api.model) \
-        if cfg.api.base_url else LlmApiClient("", "", "")
+    # ---- 3. pipeline 预热（ASR 加载 + API 健康；采集等「开始会议」才启动）----
+    api = LlmApiClient(cfg.api.base_url, cfg.api.api_key, cfg.api.model)
     pipe = Pipeline(cfg, bus, str(model_dir), api,
                    target_lang=getattr(cfg.ui, "target_lang", "zh"))
     pipe.setup_lanes()
-    pipe.start()
+    pipe.warmup()            # 只加载 ASR + 检查 API，不开采集
     pipe.run_lane_workers()
+    # 未配置翻译 API → 一次性告知（不逐句报错）
+    if api.misconfigured:
+        bus.publish("notice", "未配置翻译 API（config.yaml api.base_url），仅显示原文")
     bus.publish("status", ("ready", 0, None))
     app.processEvents()
+    # 关窗自动收尾（stop 幂等）
+    app.aboutToQuit.connect(pipe.stop)
 
     # ---- 4. 主窗口 + 浮窗 ----
     main_win = MainWindow(bus, model_path=str(model_dir),
@@ -75,6 +79,7 @@ def run_app(cfg, bus) -> int:
 
     # 浮窗事件 → 主窗口联动
     overlay.hide_requested.connect(main_win.close)
+    main_win.attach_overlay(overlay)  # 状态切换同步到浮窗
 
     # 事件桥接：asr/trans → 浮窗（字幕 + 延迟 + 译文回填）
     ov_lines: dict[str, object] = {}
@@ -99,8 +104,8 @@ def run_app(cfg, bus) -> int:
     bus.subscribe("trans", on_trans)
     bus.subscribe("trans_err", on_trans_err)
 
-    # 录音状态 → 浮窗状态栏（不再一直停在「等待语音…」）
-    overlay.set_running(True)
+    # 录音状态 → 浮窗状态栏（启动默认「待机」，点「开始会议」才录音）
+    overlay.set_idle()
 
     # ---- EventBus 泵 ----
     timer = QTimer()

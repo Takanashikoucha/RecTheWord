@@ -47,7 +47,8 @@ class LlmApiClient:
         self.model = model
         self.translate_timeout = translate_timeout
         self.minutes_timeout = minutes_timeout
-        self.available = True
+        self.misconfigured = not self.base  # 未配置 base_url
+        self.available = not self.misconfigured  # 未配置 → 直接不可用（不逐句报错）
         self.last_error = ""
         self._ctx_history: deque[str] = deque(maxlen=10)
         self._env_lock = threading.Lock()

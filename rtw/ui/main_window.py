@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.bus = bus
         self.pipeline = pipeline  # 用于设备刷新 / 热切换（可选，测试可不传）
+        self.overlay = None       # 由 app.py 装配后 attach
         self.setWindowTitle("RecTheWord — 实时字幕与翻译")
         self.resize(1280, 760)
         self.setMinimumSize(1024, 640)
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self._line_refs: dict[str, QLabel] = {}
         self._paused = False
         self._stopped = False
+        self._started = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -138,6 +140,7 @@ class MainWindow(QMainWindow):
         bus.subscribe("trans", self.on_trans)
         bus.subscribe("trans_err", self.on_trans_err)
         bus.subscribe("seg", self.on_seg)
+        bus.subscribe("notice", self.on_notice)
 
     # ---------- 构建 ----------
 
@@ -161,8 +164,8 @@ class MainWindow(QMainWindow):
         brand.setObjectName("brandLabel")
         lay.addWidget(brand)
 
-        self.session_pill = QLabel("● 录音中")
-        self.session_pill.setObjectName("sessionPillLive")
+        self.session_pill = QLabel("待机")
+        self.session_pill.setObjectName("sessionPillIdle")
         lay.addWidget(self.session_pill)
         self.timer_lbl = QLabel("00:00:00")
         self.timer_lbl.setObjectName("timerLabel")
@@ -377,16 +380,24 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(20, 0, 20, 0)
         lay.setSpacing(14)
 
+        self.start_btn = QPushButton("▶ 开始会议")
+        self.start_btn.setObjectName("primaryBtn")
+        self.start_btn.setToolTip("开始会议：建立会话并开始双通道采集")
+        self.start_btn.clicked.connect(self._on_start_clicked)
+        lay.addWidget(self.start_btn)
+
         self.play_btn = QPushButton("❚❚")
         self.play_btn.setObjectName("playBtn")
         self.play_btn.setCheckable(True)
         self.play_btn.setToolTip("暂停 / 继续")
+        self.play_btn.setEnabled(False)
         self.play_btn.toggled.connect(self._on_pause_toggled)
         lay.addWidget(self.play_btn)
 
         self.stop_btn = QPushButton("■")
         self.stop_btn.setObjectName("stopBtn")
         self.stop_btn.setToolTip("停止（结束会话并归档）")
+        self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         lay.addWidget(self.stop_btn)
 
@@ -412,21 +423,51 @@ class MainWindow(QMainWindow):
         exp = QPushButton("导出记录")
         exp.clicked.connect(self._on_export)
         lay.addWidget(exp)
-        mins = QPushButton("生成会议纪要")
-        mins.setObjectName("primaryBtn")
-        mins.clicked.connect(self._on_generate_minutes)
-        lay.addWidget(mins)
+        self.refine_btn = QPushButton("精修说话人")
+        self.refine_btn.setToolTip("会后离线精修说话人（手动）")
+        self.refine_btn.setEnabled(False)
+        self.refine_btn.clicked.connect(self._on_refine_speakers)
+        lay.addWidget(self.refine_btn)
+        self.mins_btn = QPushButton("生成会议纪要")
+        self.mins_btn.setObjectName("primaryBtn")
+        self.mins_btn.setToolTip("会后生成 AI 纪要（手动，停止后可用）")
+        self.mins_btn.setEnabled(False)
+        self.mins_btn.clicked.connect(self._on_generate_minutes)
+        lay.addWidget(self.mins_btn)
         return dock
 
     # ---------- 事件处理 ----------
 
-    # ---- 录音控制（暂停 / 停止）----
+    def attach_overlay(self, overlay) -> None:
+        """app.py 装配后绑定浮窗，使状态切换能同步到浮窗状态栏。"""
+        self.overlay = overlay
+
+    # ---- 录音控制（开始 / 暂停 / 停止）----
 
     def _set_pill(self, text: str, obj: str) -> None:
         self.session_pill.setText(text)
         self.session_pill.setObjectName(obj)
         self.session_pill.style().unpolish(self.session_pill)
         self.session_pill.style().polish(self.session_pill)
+
+    def _on_start_clicked(self) -> None:
+        """开始会议：建立会话 + 启动双通道采集（启动后默认停止，需手动开始）。"""
+        if self._stopped:
+            self._toast("本场已结束，请重启应用开始新会议")
+            return
+        self._started = True
+        self.start_btn.setVisible(False)
+        self.play_btn.setEnabled(True)
+        self.stop_btn.setEnabled(True)
+        self._set_pill("● 录音中", "sessionPillLive")
+        if self.overlay is not None:
+            self.overlay.set_live()
+        if self.pipeline is not None:
+            try:
+                self.pipeline.start_recording()
+            except Exception as e:
+                self._toast(f"开始失败：{e}")
+        self._toast("会议已开始")
 
     def _on_pause_toggled(self, checked: bool) -> None:
         """暂停/继续：冻结音频采集（VAD 不切句），UI 状态同步。"""
@@ -439,23 +480,45 @@ class MainWindow(QMainWindow):
                     self.pipeline.resume()
             except Exception as e:
                 self._toast(f"{'暂停' if checked else '继续'}失败：{e}")
-        self._set_pill("❚❚ 已暂停", "sessionPillPaused")
-        self._toast("已暂停" if checked else "已继续")
-        if not checked:
+        if checked:
+            self._set_pill("❚❚ 已暂停", "sessionPillPaused")
+            if self.overlay is not None:
+                self.overlay.set_paused()
+            self._toast("已暂停")
+        else:
             self._set_pill("● 录音中", "sessionPillLive")
+            if self.overlay is not None:
+                self.overlay.set_live()
+            self._toast("已继续")
 
     def _on_stop_clicked(self) -> None:
-        """停止：结束会话 + 归档（此后零后台计算）。"""
+        """停止：结束会话 + 归档；解锁「精修说话人 / 生成会议纪要」。"""
         self._stopped = True
         self.play_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
+        self.refine_btn.setEnabled(True)
+        self.mins_btn.setEnabled(True)
         self._set_pill("■ 已停止", "sessionPillStopped")
+        if self.overlay is not None:
+            self.overlay.set_stopped()
         if self.pipeline is not None:
             try:
                 self.pipeline.stop()
             except Exception as e:
                 self._toast(f"停止失败：{e}")
         self._toast("已停止 · 会话已归档")
+
+    def _on_refine_speakers(self) -> None:
+        """会后离线精修说话人（手动，独立于纪要）。"""
+        if self.pipeline is None:
+            return
+        try:
+            res = self.pipeline.refine_speakers()
+            n = res.get("n_speakers", 0)
+            self.spk_cnt.setText(str(n))
+            self._toast(f"精修完成 · {n} 个说话人（labels.json）")
+        except Exception as e:
+            self._toast(f"精修失败：{e}")
 
     def _toast(self, text: str) -> None:
         """瞬时提示（设备刷新 / 切换结果），3 秒后收起。"""
@@ -480,6 +543,15 @@ class MainWindow(QMainWindow):
             self.toast_eta.setText("")
             # 3 秒后收起
             QTimer.singleShot(3000, self.toast.hide)
+
+    def on_notice(self, text: str) -> None:
+        """一次性通知（如未配置翻译 API），停留 6 秒。"""
+        self.toast.show()
+        self.toast_msg.setText(text)
+        self.toast_eta.setText("")
+        self.toast.adjustSize()
+        self.toast.move(20, 60)
+        QTimer.singleShot(6000, self.toast.hide)
 
     def on_asr(self, p: dict) -> None:
         self._sentence_count += 1

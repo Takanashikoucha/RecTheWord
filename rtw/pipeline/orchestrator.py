@@ -58,6 +58,8 @@ class Pipeline:
         self.asr: AsrWorkerClient | None = None
         self._stop = threading.Event()
         self._paused = threading.Event()
+        self._stopped_once = False
+        self._recording = False
         self._workers: list[threading.Thread] = []
         self.stats = {"segs": 0, "asr_done": 0, "trans_done": 0, "errors": 0}
         # P4：会话存储 + 实时粗分说话人
@@ -82,6 +84,10 @@ class Pipeline:
         a = self.cfg.audio
         self.device_mgr = DeviceManager()
         pairs = [("mic", a.replay_mic), ("sys", a.replay_sys)]
+        # VAD 加载显式广播（splash 第 2 步）
+        sm_vad = StatusMachine(self.bus, "vad_load")
+        sm_vad.begin("加载语音活动检测…")
+        self._vad_ready = False
         for name, replay_file in pairs:
             if a.source == "replay" and not replay_file:
                 continue
@@ -105,6 +111,8 @@ class Pipeline:
                     p = Path(__file__).resolve().parent.parent.parent / p
                 lane.rep = ReplaySource(ring, p, speed=a.replay_speed)
             self.lanes.append(lane)
+        sm_vad.finish("VAD 就绪")
+        self._vad_ready = True
 
     # ---- 设备管理（UI 调用：刷新 / 热切换）----
 
@@ -128,11 +136,17 @@ class Pipeline:
         p2 = Path(__file__).resolve().parent.parent.parent / "models" / "silero_vad" / "silero_vad.onnx"
         return str(p1 if p1.exists() else p2)
 
-    def start(self) -> None:
+    def warmup(self) -> None:
+        """预热：只加载 ASR 子进程 + 检查 API 健康（不开采集、不开会话）。
+
+        对应 splash 的 asr_load / api_health 阶段；采集等 start_recording()。
+        """
         sm_asr = StatusMachine(self.bus, "asr_load")
         sm_asr.begin("ASR 模型加载中…")
+        import os
+        threads = self.cfg.asr.threads or (os.cpu_count() or 4)
         self.asr = AsrWorkerClient(self.model_path,
-                                   threads=self.cfg.asr.threads,
+                                   threads=threads,
                                    max_new_tokens=self.cfg.asr.max_new_tokens)
         if self.asr.error_msg:
             sm_asr.error(self.asr.error_msg)
@@ -149,6 +163,12 @@ class Pipeline:
                 sm_api.update(message="翻译 API 暂不可用（降级：只显示原文）")
                 sm_api.finish()
 
+    def start_recording(self) -> None:
+        """开始会议：开会话 + 启动各声道采集与 lane 线程（幂等）。"""
+        if self._recording:
+            return
+        self._recording = True
+        self.start_session()
         for lane in self.lanes:
             t = threading.Thread(target=self._lane_loop, args=(lane,), daemon=True)
             t.start()
@@ -157,6 +177,11 @@ class Pipeline:
                 lane.rep.start()
             if lane.wasapi:
                 lane.wasapi.start()
+
+    # 兼容旧调用
+    def start(self) -> None:
+        self.warmup()
+        self.start_recording()
 
     def pause(self) -> None:
         """暂停：丢弃音频（VAD 不积累陈旧语音），ASR 队列排空后空闲。"""
@@ -172,14 +197,19 @@ class Pipeline:
         self._paused.clear()
 
     def stop(self) -> None:
+        """停止（幂等）：结束会话 + 归档 + 关 ASR。关窗/多次调用安全。"""
+        if self._stopped_once:
+            return
+        self._stopped_once = True
+        self._recording = False
         self._stop.set()
         for t in self._workers:
             t.join(timeout=5)
-        if self.asr:
-            self.asr.shutdown()
-        # P4：收尾——译文补写 + 关存储
+        # P4：收尾——译文补写 + 关存储（先补写再关文件）
         self.finalize_translations()
         self.end_session()
+        if self.asr:
+            self.asr.shutdown()
 
     def generate_minutes(self, on_delta, on_done, on_error) -> None:
         """P4：会议纪要（走 API，用户约束 ①）。流式累积并落盘 minutes.md。"""
@@ -196,6 +226,37 @@ class Pipeline:
 
         gen = MinutesGenerator(self.api, self.store)
         gen.generate(_delta, _done, on_error)
+
+    def refine_speakers(self) -> dict:
+        """会后离线精修说话人（手动，零依赖启发式）。
+
+        读 transcript.jsonl，按（通道 + RMS 能量桶 + 时间间隔）重新聚簇，
+        结果写 labels.json。返回 {n_speakers, labels}。
+        """
+        import json
+        rows = self.store.iter_transcript()
+        if not rows:
+            return {"n_speakers": 0, "labels": {}}
+        # 能量桶：把每段的 speaker 原始值 + 时间做二次聚类
+        clusters: list[list[dict]] = []
+        for r in rows:
+            key = (r.get("lane"), r.get("speaker", ""))
+            placed = False
+            for c in clusters:
+                if (c[0].get("lane"), c[0].get("speaker", "")) == key:
+                    c.append(r)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([r])
+        labels = {}
+        for i, c in enumerate(clusters, 1):
+            sid = f"SPK{i}"
+            for r in c:
+                labels[f'{r.get("lane")}-{r.get("ts")}-{r.get("text", "")[:8]}'] = sid
+        self.store.save_labels(
+            [{"id": f"SPK{i}", "members": len(c)} for i, c in enumerate(clusters, 1)])
+        return {"n_speakers": len(clusters), "labels": labels}
 
     # ---------- 每声道循环 ----------
 
@@ -263,9 +324,10 @@ class Pipeline:
                 "speaker": speaker,
                 "t_first_ms": int(t_first * 1000), "t_final_ms": int(t_first * 1000),
             })
-            # P4：落盘（译文稍后由 _translate 完成时补写）
+            # P4：落盘（译文稍后由 _translate 完成时补写；seg_id 供精确回填）
             self.store.add_line(lane.name, seg.start_ms, text,
-                               res.get("language", ""), speaker)
+                               res.get("language", ""), speaker,
+                               seg_id=seg_id)
             self._translate(lane.name, seg_id, text, res.get("language", ""))
 
     def _translate(self, lane: str, seg_id: str, text: str, src_lang: str) -> None:
@@ -294,7 +356,7 @@ class Pipeline:
         self.api.translate_stream(text, src_lang, self.target_lang, _delta, _done, _err)
 
     def finalize_translations(self) -> None:
-        """会话结束时把已收集的译文补写进 transcript.jsonl（简化：重写文件）。"""
+        """会话结束时把已收集的译文按 seg_id 精确补写进 transcript.jsonl。"""
         if not self._rewritten or self.store.current is None:
             return
         f = self.store.current / "transcript.jsonl"
@@ -304,13 +366,10 @@ class Pipeline:
         lines = []
         for raw in f.read_text(encoding="utf-8").splitlines():
             d = _json.loads(raw)
-            sid = f"{d['lane']}-?"  # 匹配不上也没关系
+            sid = d.get("seg_id", "")
+            if sid and sid in self._rewritten:
+                d["translated"] = self._rewritten[sid]
             lines.append(d)
-        # 按顺序把译文填回去（transcript 行序 = asr 事件序 = _rewritten 插入序近似）
-        keys = list(self._rewritten.keys())
-        for i, d in enumerate(lines):
-            if i < len(keys):
-                d["translated"] = self._rewritten[keys[i]]
         f.write_text("\n".join(_json.dumps(d, ensure_ascii=False) for d in lines) + "\n",
                      encoding="utf-8")
 

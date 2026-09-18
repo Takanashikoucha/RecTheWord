@@ -21,12 +21,12 @@ class SessionStore:
         return self.current
 
     def add_line(self, lane: str, ts_ms: int, text: str, language: str = "",
-                speaker: str = "", translated: str = "") -> None:
+                speaker: str = "", translated: str = "", seg_id: str = "") -> None:
         if not self._transcript_f:
             return
         self._transcript_f.write(json.dumps(
             {"ts": ts_ms, "lane": lane, "text": text, "lang": language,
-             "speaker": speaker, "translated": translated},
+             "speaker": speaker, "translated": translated, "seg_id": seg_id},
             ensure_ascii=False) + "\n")
         self._transcript_f.flush()
 

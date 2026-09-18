@@ -201,6 +201,19 @@ class OverlayWindow(QWidget):
         else:
             self.set_status("● 录音中")
 
+    # 四态便捷方法（待机 / 录音 / 暂停 / 停止）
+    def set_idle(self) -> None:
+        self.set_status("待机")
+
+    def set_live(self) -> None:
+        self.set_status("● 录音中")
+
+    def set_paused(self) -> None:
+        self.set_status("已暂停")
+
+    def set_stopped(self) -> None:
+        self.set_status("已停止")
+
     def set_theme(self, theme: str) -> None:
         if theme not in THEMES:
             return

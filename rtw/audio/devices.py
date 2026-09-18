@@ -73,8 +73,40 @@ class WasapiSource:
         else:
             self.start()
 
+    def _find_loopback(self, pa) -> dict | None:
+        """按官方 API 找输出设备对应的环回虚拟输入设备。
+
+        PyAudioWPatch 把环回设备作为独立虚拟输入设备（名字带 [Loopback] 后缀）。
+        默认输出 → get_default_wasapi_loopback()；指定输出索引 → 按名称匹配。
+        """
+        if self.device_index is None:
+            try:
+                lb = pa.get_default_wasapi_loopback()
+                if lb:
+                    return lb
+            except Exception:
+                pass
+            try:
+                wasapi = pa.get_host_api_info_by_type(pa.paWASAPI)
+                out_name = pa.get_device_info_by_index(
+                    wasapi["defaultOutputDevice"])["name"]
+            except Exception:
+                return None
+            for lb in pa.get_loopback_device_info_generator():
+                if out_name in lb.get("name", ""):
+                    return lb
+            return None
+        try:
+            out_name = pa.get_device_info_by_index(self.device_index)["name"]
+        except Exception:
+            return None
+        for lb in pa.get_loopback_device_info_generator():
+            if out_name in lb.get("name", ""):
+                return lb
+        return None
+
     def _open_stream(self):
-        """打开一路 WASAPI 流（输入或环回）。返回 (stream, samplerate)。"""
+        """打开一路 WASAPI 流（mic=输入 / sys=官方环回虚拟设备）。"""
         import pyaudiowpatch as pyaudio
         pa = pyaudio.PyAudio()
         if self.kind == "mic":
@@ -82,16 +114,15 @@ class WasapiSource:
                              rate=TARGET_SR, input=True,
                              input_device_index=self.device_index,
                              frames_per_buffer=CHUNK_SAMPLES)
-        else:  # sys = 输出设备环回
-            out_idx = self.device_index if self.device_index is not None else \
-                pa.get_default_output_device_info()["index"]
+        else:  # sys = 输出设备环回（独立虚拟输入设备）
+            lb = self._find_loopback(pa)
+            if lb is None:
+                raise RuntimeError("未找到可用的 WASAPI 环回设备")
             stream = pa.open(format=pyaudio.paInt16, channels=1,
-                             rate=TARGET_SR, input=True,
-                             input_device_index=out_idx,
-                             frames_per_buffer=CHUNK_SAMPLES,
-                             wasapi_exclusive=False)
-            # 环回：PyAudioWPatch 用 output 设备索引作为 input 即捕获其播放
-            # （需 input_subformat / 环回标志；此处用标准环回方式）
+                             rate=lb.get("defaultSampleRate", TARGET_SR),
+                             input=True,
+                             input_device_index=lb["index"],
+                             frames_per_buffer=CHUNK_SAMPLES)
         return pa, stream
 
     def _run(self) -> None:
@@ -156,12 +187,18 @@ class DeviceManager:
                 for i in range(pa.get_device_count()):
                     info = pa.get_device_info_by_index(i)
                     name = info.get("name", f"device {i}")
-                    if info.get("maxInputChannels", 0) > 0:
+                    if info.get("maxInputChannels", 0) > 0 and \
+                            not info.get("isLoopbackDevice", False):
                         mic.append({"index": i, "name": name})
-                    if info.get("maxOutputChannels", 0) > 0:
-                        sys_dev.append({"index": i, "name": name})
             except Exception as e:
                 log.warning("设备枚举失败：%s", e)
+            # sys = 环回虚拟输入设备（官方 API，名字带 [Loopback]）
+            try:
+                for lb in pa.get_loopback_device_info_generator():
+                    sys_dev.append({"index": lb["index"],
+                                   "name": lb.get("name", "")})
+            except Exception as e:
+                log.warning("环回设备枚举失败：%s", e)
             return {"mic": mic, "sys": sys_dev}
 
     def refresh(self) -> dict[str, list[dict]]:
