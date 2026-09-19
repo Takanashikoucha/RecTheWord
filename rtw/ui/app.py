@@ -96,8 +96,10 @@ def run_app(cfg, bus) -> int:
     startup_thread.start()
 
     # ---- 3. 主线程：循环 pump 直到启动完成或出错 ----
+    # 高频泵（16ms≈60fps）：非阻塞 drain 全部待发事件 + 立即 processEvents，
+    # 消除旧 33ms 定时器 + pump(0.02) 阻塞带来的 ~33-53ms 事件延迟与抖动。
     def _pump_and_check() -> None:
-        bus.pump(0.02)
+        bus.pump(0)
         app.processEvents()
         if "ok" in startup_result or "error" in startup_result:
             check_timer.stop()
@@ -108,7 +110,7 @@ def run_app(cfg, bus) -> int:
 
     check_timer = QTimer()
     check_timer.timeout.connect(_pump_and_check)
-    check_timer.start(33)
+    check_timer.start(16)
 
     # 如果启动线程在第一次 pump 之前就完成了，立即处理
     app.processEvents()
@@ -205,10 +207,11 @@ def _show_main_windows(app, bus, splash, result: dict) -> None:
     # 关闭 splash
     splash.close()
 
-    # EventBus 泵
+    # EventBus 泵（16ms≈60fps，非阻塞 drain + 紧随 processEvents，
+    # 让主窗与浮窗在同一事件批次内更新 → 视觉同步、滚动更顺滑）
     timer = QTimer()
-    timer.timeout.connect(lambda: bus.pump(0.02))
-    timer.start(33)
+    timer.timeout.connect(lambda: (bus.pump(0), app.processEvents()))
+    timer.start(16)
 
     # 浮窗时钟
     clk = QTimer()

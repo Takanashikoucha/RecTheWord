@@ -92,6 +92,7 @@ class OverlayWindow(QWidget):
         self._theme = "glass"
         self._clock_start = time.monotonic()
         self._last_latency: int | None = None
+        self._status_word = "待机"  # 状态栏独立字段（tick 时与时长重组，不累积）
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -147,7 +148,8 @@ class OverlayWindow(QWidget):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            # 竖直滚动条彻底关闭：浮窗强制钉在最新行，不允许向上翻历史
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setAutoFillBackground(False)
             scroll.viewport().setAutoFillBackground(False)
             container = QWidget()
@@ -155,6 +157,7 @@ class OverlayWindow(QWidget):
             lines_layout = QVBoxLayout(container)
             lines_layout.setContentsMargins(0, 0, 0, 0)
             lines_layout.setSpacing(6)
+            # addStretch 把行钉在容器底部：最新行贴 viewport 下沿可见，旧行向上溢出
             lines_layout.addStretch(1)
             scroll.setWidget(container)
             lay.addWidget(scroll, 1)
@@ -168,24 +171,33 @@ class OverlayWindow(QWidget):
         self.status_lbl.setObjectName("ovMeta")
         lay.addWidget(self.status_lbl)
 
+        # 高频「钉底」定时器：持续把两个 section 滚动条拉到底（规避 resize 重置）
+        self.start_pin_timer()
+
     # ---- 对外接口（EventBus 驱动）----
 
     def add_line(self, lane: str) -> SubLineWidget:
         sec = self.sections.get(lane, self.sections["mic"])
         layout = sec["layout"]
         w = SubLineWidget(lane)
+        # 插到末尾 stretch 之前（stretch 恒为最后一项，行在其上方堆叠、贴底）
         layout.insertWidget(layout.count() - 1, w)
-        # 每区限 5 条
-        while layout.count() > 6:
-            item = layout.takeAt(1)
+        # 每区限 8 条（防内存无限增长；可视区只显最新几条，旧行向上溢出）
+        while layout.count() > 9:  # 8 行 + 1 stretch
+            item = layout.takeAt(1)  # 取最旧行（stretch 前的第一项）
             old = item.widget() if item else None
             if old:
                 old.deleteLater()
-        sec["scroll"].verticalScrollBar().setValue(
-            sec["scroll"].verticalScrollBar().maximum())
+        # 钉最新行：滚到底部。用 singleShot(0) 延后到布局/resize 稳定后再滚，
+        # 避免 setWidgetResizable 的 resize 事件把 setValue 重置回去（之前 value≠max 的根因）。
+        sb = sec["scroll"].verticalScrollBar()
+        sb.setValue(sb.maximum())
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: sb.setValue(sb.maximum()))
         return w
 
     def set_status(self, text: str) -> None:
+        self._status_word = text
         self.status_lbl.setText(text)
 
     def set_latency(self, ms: int | None) -> None:
@@ -266,6 +278,25 @@ class OverlayWindow(QWidget):
         clock = f"{s // 60:02d}:{s % 60:02d}"
         lat = f"<b>{self._last_latency}</b>" if self._last_latency is not None else "<b>-</b>"
         self.meta.setText(f"延迟 {lat} ms · {clock}")
-        # 状态栏扩展：状态 + 时长 + 句数
-        status = self.status_lbl.text()
-        self.status_lbl.setText(f"{status} · {clock}")
+        # 状态栏：从独立字段重建（不读取旧文本，避免时长无限累积）
+        self.status_lbl.setText(f"{self._status_word} · {clock}")
+
+    def start_pin_timer(self) -> None:
+        """启动高频「钉底」定时器：每 50ms 把两个 section 的滚动条拉到底。
+
+        背景：setWidgetResizable 下容器 resize 会异步发生，add_line 里的一次性
+        setValue(maximum()) 常被随后的 resize 事件用旧值覆盖（表现为 value≠max、
+        最新行被裁掉）。持续锁定可规避该时序问题，且滚动条已 AlwaysOff 用户无法上翻。
+        """
+        from PySide6.QtCore import QTimer
+        if getattr(self, "_pin_timer", None) is not None:
+            return
+        self._pin_timer = QTimer(self)
+        self._pin_timer.timeout.connect(self._pin_all_to_bottom)
+        self._pin_timer.start(50)
+
+    def _pin_all_to_bottom(self) -> None:
+        for sec in self.sections.values():
+            sb = sec["scroll"].verticalScrollBar()
+            if sb.maximum() > 0:
+                sb.setValue(sb.maximum())

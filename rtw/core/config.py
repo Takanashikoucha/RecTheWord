@@ -27,10 +27,24 @@ class AudioCfg:
 @dataclass
 class VadCfg:
     threshold: float = 0.5
-    min_speech_ms: int = 250
-    min_silence_ms: int = 300
-    max_speech_ms: int = 8000        # 强制断句上限
+    min_speech_ms: int = 100         # 弱 onset 快速确认，保句首
+    min_silence_ms: int = 400        # 卡在句内停顿~300ms 与句间停顿~500ms 之间
+    max_speech_ms: int = 3000        # 短段（balanced）→ ASR 解码快 → 延迟低
+    merge_gap_ms: int = 300          # 紧贴碎段合并回一句，但不粘真句子
     window_ms: int = 32
+    # 动态 pre_pad 实验开关
+    pad_strategy: str = "dyn_shared"  # fixed | dyn_shared | dyn_perlane
+    live_diarize: bool = False       # 录制时是否实时粗分说话人（False=仅离线精修区分）
+    scheme: str = "B"                # current | A(边界跟随ASR) | B(去硬边界+tail_pad) | C | D(参数化)
+    pad_base_ms: int = 250           # 方案 D：固定 pre_pad 基底（治开场/句首丢字）
+    pad_dyn_cap_ms: int = 400        # 方案 D：动态补充封顶（压延迟）
+    # 分通道参数（方案 E）：mic 真人易噪需抗噪，sys TTS 清晰可更细
+    mic_threshold: float = 0.5
+    sys_threshold: float = 0.4
+    mic_merge_gap_ms: int = 350
+    sys_merge_gap_ms: int = 200
+    mic_pad_base_ms: int = 300
+    sys_pad_base_ms: int = 250
 
 
 @dataclass
@@ -190,6 +204,7 @@ HOT_APPLICABLE = {
     "vad": ("threshold", "min_silence_ms"),
 }
 RESTART_REQUIRED = {
+    "vad": ("pad_strategy", "live_diarize", "scheme", "pad_base_ms", "pad_dyn_cap_ms"),  # 需重建 lane/VAD 才生效
     "asr": ("model", "device", "compute_type", "threads", "segment_policy"),
     "audio": ("source", "sample_rate", "chunk_ms"),
     "backlog": ("enabled", "high_watermark", "low_watermark", "drop_watermark",

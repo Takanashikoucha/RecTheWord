@@ -109,9 +109,9 @@ QFrame#subLine:hover {{ background: rgba(0,0,0,.03); }}
           border-radius: 7px; font-weight: 700; font-size: 11px; padding: 4px 0; }}
 #tagSys {{ background: #efebff; color: {TOKENS['sys']};
           border-radius: 7px; font-weight: 700; font-size: 11px; padding: 4px 0; }}
-#srcText {{ font-size: 20px; font-weight: 500; color: {TOKENS['txt']}; }}
-#srcTextInterim {{ font-size: 20px; color: {TOKENS['dim']}; }}
-#trText {{ font-size: 14px; color: {TOKENS['dim']}; }}
+#srcText {{ font-size: 17px; font-weight: 500; color: {TOKENS['txt']}; }}
+#srcTextInterim {{ font-size: 17px; color: {TOKENS['dim']}; }}
+#trText {{ font-size: 13px; color: {TOKENS['dim']}; }}
 #tsText {{ font-family: Consolas,monospace; font-size: 11px; color: #9a8f82; }}
 
 /* ---- 底部 dock ---- */
@@ -167,9 +167,9 @@ QFrame#ovLine {{ background: transparent; }}
          letter-spacing: 1px; margin-top: 4px; }}
 #secSys {{ color: {TOKENS['sys']}; font-size: 11px; font-weight: 700;
          letter-spacing: 1px; margin-top: 4px; }}
-#ovSrc {{ font-size: 22px; font-weight: 600; color: {TOKENS['txt']}; }}
-#ovSrcInterim {{ font-size: 22px; color: {TOKENS['dim']}; }}
-#ovTr {{ font-size: 14.5px; color: {TOKENS['dim']}; }}
+#ovSrc {{ font-size: 18px; font-weight: 600; color: {TOKENS['txt']}; }}
+#ovSrcInterim {{ font-size: 18px; color: {TOKENS['dim']}; }}
+#ovTr {{ font-size: 13px; color: {TOKENS['dim']}; }}
 #ovTs {{ font-family: Consolas,monospace; font-size: 10px; color: rgba(37,28,21,.35); }}
 """
 

@@ -45,6 +45,7 @@ rtw/
   │   └─ model_manager.py     # ModelManager（ModelScope 下载，断点续传）
   ├─ audio/
   │   ├─ ring_buffer.py       # RingBuffer（30s 环形缓冲）
+  │   ├─ preprocess.py        # 慢启动快释放压缩器（抬高电平，提升弱句首信噪比）
   │   ├─ replay_source.py     # ReplaySource（WASAPI 抽象 / 测试注入）
   │   ├─ devices.py           # DeviceManager + WasapiSource（Windows WASAPI 输入/环回）
   │   └─ linux_capture.py     # LinuxCapture + LinuxDeviceManager（PW·Pulse monitor + ALSA mic）
@@ -68,12 +69,15 @@ rtw/
 
 ```
 采集源（Windows=WASAPI / Linux=PW·Pulse monitor + ALSA / 测试=ReplaySource）
-  ├─ sys → RingBuffer → SileroVad ─┐
-  └─ mic → RingBuffer → SileroVad ─┴→ 各自 seg_q（BacklogGuard 监控深度）
-        ├─ _lane_loop：drain ring → VAD 切句 → seg_q（publish "seg"）
-        ├─ _asr_worker_loop：seg → AsrWorker.transcribe（整句）
+  ├─ sys → RingBuffer → 压缩器预处理 → SileroVad ─┐
+  └─ mic → RingBuffer → 压缩器预处理 → SileroVad ─┴→ 各自 seg_q（BacklogGuard 监控深度）
+        ├─ _lane_loop：drain ring → 预处理（慢启动快释放压缩，抬电平保弱句首）
+        │              → VAD 切句（动态 pre_pad + 短间隔合并到上一段 + 冷启动保护）
+        │              → seg_q（publish "seg"）
+        ├─ _asr_dispatcher：单实例串行调度（FIFO + 追赶，两通道公平）
+        │     → seg → AsrWorker.transcribe（整句，max_speech 3s 短段）
         │     → publish "asr"（含 t_first_ms / speaker）
-        │     → 段 RMS → CoarseDiarizer.assign（说话人槽）
+        │     → 段 RMS → CoarseDiarizer.assign（说话人槽，仅 live_diarize 时）
         │     → SessionStore.add_line（落盘）
         │     → _translate（fire-and-forget，不阻塞 worker）
         └─ LlmApiClient.translate_stream（SSE 逐字）→ publish "trans"
@@ -132,6 +136,34 @@ ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩
 - **恢复防抖**：回落到 `low_watermark` 且维持 `recover_grace_s` 才宣告恢复，
   避免阈值来回抖动。状态机 NORMAL/BACKLOGGED/RECOVERED，经 `"backlog"` 事件广播。
 
+### 4.7 VAD 动态调优（实时性 ↔ 完整度平衡）
+围绕"一句话一段、兼顾实时性与完整度"的目标，VAD 侧做了以下协同设计
+（`vad.*` 配置 + `silero.py` 实现）：
+
+- **音频预处理（压缩器）**：`preprocess.py` 慢启动快释放压缩器（attack 50ms /
+  release 10ms / 门限 -18dB / 压缩比 3:1 / makeup +3dB），在 VAD 前抬高整体电平、
+  平滑压扁动态范围，提升弱句首信噪比（治句首丢失）。相比"门限+增益"，纯压缩器
+  是连续函数、无硬分段，不会误伤 0.3-0.5 的弱 onset。
+- **动态 pre_pad（实时性↔完整度核心）**：`pre_pad = BASE + clamp(ASR延迟EMA, 0, CAP)`。
+  ASR 是单实例串行，延迟 EMA 两通道**共享**（`_asr_delay_ema`，alpha 0.3）；
+  硬边界 `_last_end_win` **每通道独立**（防跨句重叠→重复句）。ASR 越慢，pre_pad
+  越大，句首回退越多，保住弱 onset。
+- **冷启动保护**：录音最初 ~1.5s 且尚无上一段时，min_speech 降到 4 窗（~128ms）
+  快速确认第一句，pre_pad 直接追到 win 0（治开场"靠！"丢句首）。
+- **短间隔合并到上一段**：距上一段 < `skip_short_gap_ms`（300ms）的段，PCM 追加到
+  上一段尾部（若上一段仍在队列），而非丢弃——碎片被吸收、音频不丢（治"所以""另"
+  这类句首残片）。
+- **max_speech 3s（短段降延迟）**：`segment_policy=balanced` → max_speech 3000ms。
+  短段使单段 ASR 解码快，端到端延迟 p90 ~5s（vs 6s 段的 p90 ~8s）。实测双实例
+  （mic/sys 各一 ASR 并行）并未进一步降延迟——瓶颈是单段解码耗时而非排队，故保留
+  单实例（省内存）。
+- **分通道参数（方案 E）**：mic（真人易噪）threshold 0.5 / merge_gap 500 / pad_base 350；
+  sys（TTS 清晰）threshold 0.5 / merge_gap 500 / pad_base 300。
+- **关键参数**：min_speech 100ms（弱 onset 快速确认）、min_silence 400ms（卡在句内
+  停顿~300ms 与句间停顿~500ms 之间）、merge_gap 300ms、threshold 0.5。
+- **max_speech 强制断句修复**：用 `_seg_anchor_win`（不被 merge_gap 重置的锚点）判断
+  段时长，避免 merge_gap 重置 `_seg_start_win` 导致 10-14s 超长段（旧 bug）。
+
 ## 5. 边缘情况与失败模式
 
 - **环回不可用** → 降级仅 mic 单路；纪要仍可用文字流源。
@@ -162,8 +194,11 @@ ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩
 
 - Windows 10/11 x64 **或 Linux（Debian/Ubuntu/Fedora 等，需 PipeWire 或 PulseAudio）**，
   Python 3.10–3.12，首跑有网。
-- 实时 = 整句解码 1-3 秒出文本；翻译只跟 final（省 token、防抖动）。
-- 实时界面「麦克风 / 扬声器」两路；说话人粗分实时做，精修可选。
+- 实时 = 整句解码（max_speech 3s 短段）端到端 p50 ~4s / p90 ~5s；翻译只跟 final
+  （省 token、防抖动）。单 ASR 实例串行（实测双实例不进一步降延迟，瓶颈在单段解码
+  耗时而非排队，故保留单实例省内存）。
+- 实时界面「麦克风 / 扬声器」两路；说话人粗分默认关闭（`live_diarize=false`，
+  录制时不分说话人），精修走离线 `refine_speakers`。
 - 停止后会话归档；纪要为用户手动触发。
 
 ## 8. 验收标准

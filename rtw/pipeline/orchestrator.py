@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -46,6 +47,10 @@ class LaneState:
     lin: LinuxCapture | None = None
     seg_q: "queue.Queue[SpeechSegment]" = field(default_factory=queue.Queue)
     backlog: "BacklogGuard | None" = None  # 积压自适应守护（setup_lanes 装配）
+    front_ts: int | None = None  # 队首段时间戳（时间戳公平调度用）
+    skip_short_gap_ms: int = 400  # 距上一段 <此值则跳过（治碎片，用户可调）
+    last_seg_end_ms: int = 0      # 上一已处理段终点（跳过判定用）
+    _peek: "list" = field(default_factory=list)  # 影子队列：镜像 seg_q 用于 peek 队首
 
 
 class Pipeline:
@@ -72,6 +77,14 @@ class Pipeline:
         self._translations: dict[str, list[str]] = {}  # seg_id → 译文增量
         self._rewritten: dict[str, str] = {}          # seg_id → 完整译文
         self._backlog_last: dict[str, str] = {}       # lane → 最近一次广播的积压状态
+        # ---- 动态 pre_pad 实验（双通道共用一个 ASR 延迟 EMA）----
+        # 策略：fixed=固定120 / dyn_shared=共享EMA动态 / dyn_perlane=per-lane对照
+        self.pad_strategy = getattr(cfg.vad, "pad_strategy", "dyn_shared")
+        self._asr_delay_ema = 0.0          # 共享 ASR 延迟 EMA（ms）
+        self._lane_asr_delay: dict[str, float] = {}  # per-lane 延迟（对照组）
+        self._pad_alpha = 0.3           # EMA 平滑系数
+        # 录制时是否做实时说话人粗分（False=只离线精修才区分）
+        self.live_diarize = getattr(cfg.vad, "live_diarize", False)
 
     def start_session(self, meta: dict | None = None) -> None:
         """开会话（meta 缺省自动生成）。"""
@@ -105,14 +118,49 @@ class Pipeline:
             if a.source == "replay" and not replay_file:
                 continue
             ring = RingBuffer(int(a.sample_rate * a.chunk_ms / 1000 * 30))  # 30s 缓冲
-            # P5 性能调优：激进切句（1.5s 上限）降低首字延迟；均衡 3s
-            max_speech = 1500 if self.cfg.asr.segment_policy == "aggressive" else 3000
+            # 切句上限：激进 1.5s / 均衡 3s（短段→ASR 解码快→端到端延迟低）
+            sp = self.cfg.asr.segment_policy
+            max_speech = 1500 if sp == "aggressive" else (3000 if sp == "balanced" else 6000)
+            # 方案选择：current=硬边界(VAD实时) / A=硬边界跟随ASR / B=去硬边界+tail_pad
+            #          C=硬边界+pre_pad200+tail_pad100 / D=参数化(阈值+大BASE+DYN封顶+硬边界)
+            scheme = getattr(self.cfg.vad, "scheme", "current")
+            if scheme == "B":
+                tail_pad, hard_boundary, follow_asr = 150, False, False
+            elif scheme == "A":
+                tail_pad, hard_boundary, follow_asr = 0, True, True
+            elif scheme == "C":
+                tail_pad, hard_boundary, follow_asr = 100, True, False
+            elif scheme in ("D", "E"):
+                tail_pad, hard_boundary, follow_asr = 0, True, False  # 不往后补音频（VAD 结束不拖延）
+            else:  # current
+                tail_pad, hard_boundary, follow_asr = 0, True, False
+            # 方案 C：min_silence 提到 650ms；方案 D/E：保持 500（靠 merge_gap 治碎片）
+            if scheme == "C":
+                min_silence = 650
+            else:
+                min_silence = self.cfg.vad.min_silence_ms
+            # 方案 E：分通道参数（mic 真人易噪抗噪 / sys TTS 清晰更细）
+            vcfg = self.cfg.vad
+            if name == "mic":
+                thr = getattr(vcfg, "mic_threshold", vcfg.threshold)
+                mgap = getattr(vcfg, "mic_merge_gap_ms", getattr(vcfg, "merge_gap_ms", 0))
+                base = getattr(vcfg, "mic_pad_base_ms", getattr(vcfg, "pad_base_ms", 250))
+            else:  # sys
+                thr = getattr(vcfg, "sys_threshold", vcfg.threshold)
+                mgap = getattr(vcfg, "sys_merge_gap_ms", getattr(vcfg, "merge_gap_ms", 0))
+                base = getattr(vcfg, "sys_pad_base_ms", getattr(vcfg, "pad_base_ms", 250))
             vad = SileroVad(self._vad_path(),
-                            threshold=self.cfg.vad.threshold,
+                            threshold=thr,
                             min_speech_ms=self.cfg.vad.min_speech_ms,
-                            min_silence_ms=self.cfg.vad.min_silence_ms,
-                            max_speech_ms=max_speech)
+                            min_silence_ms=min_silence,
+                            max_speech_ms=max_speech,
+                            merge_gap_ms=mgap,
+                            tail_pad_ms=tail_pad,
+                            hard_boundary=hard_boundary,
+                            boundary_follows_asr=follow_asr)
             lane = LaneState(name=name, ring=ring, vad=vad)
+            lane.pad_base = base  # 本 lane 的 pre_pad 基底（lane loop 动态计算用）
+            lane.skip_short_gap_ms = getattr(self.cfg.vad, "skip_short_gap_ms", 0)
             # 积压自适应：有界队列 + 背压守护（drop-oldest 保最新实时段）
             bl = self.cfg.backlog
             lane.seg_q = queue.Queue(maxsize=max(bl.maxsize, bl.high_watermark + 1))
@@ -252,6 +300,8 @@ class Pipeline:
         self._recording = False
         self._translations.clear()
         self._rewritten.clear()
+        self._asr_delay_ema = 0.0
+        self._lane_asr_delay.clear()
         self.stats = {"segs": 0, "asr_done": 0, "trans_done": 0, "errors": 0}
         # 重置 VAD 状态
         for lane in self.lanes:
@@ -360,36 +410,81 @@ class Pipeline:
                     lane.vad.set_threshold(base_thr)
                     lane.vad.set_min_silence_ms(base_min_sil)
                     reduced = False
+            # 动态 pre_pad = 固定基底(per-lane) + 动态补充（封顶），双通道共用共享 EMA
+            # 固定基底保底（方案 E 分通道：mic 300 / sys 250）；动态补充按 ASR 延迟补
+            scheme = getattr(self.cfg.vad, "scheme", "current")
+            if scheme == "C":
+                base, cap = 200, 0  # 固定 200ms，无动态补充 → 低延迟
+            elif scheme in ("D", "E"):
+                base = getattr(lane, "pad_base", getattr(self.cfg.vad, "pad_base_ms", 250))
+                cap = getattr(self.cfg.vad, "pad_dyn_cap_ms", 400)
+            else:
+                base, cap = 120, 800
+            if self.pad_strategy == "fixed":
+                pad = base
+            elif self.pad_strategy == "dyn_perlane":
+                raw = self._lane_asr_delay.get(lane.name, 0.0)
+                pad = base + max(0.0, min(cap, raw))
+            else:  # dyn_shared（默认）
+                pad = base + max(0.0, min(cap, self._asr_delay_ema))
+            lane.vad.set_pre_pad_ms(int(pad))
             data = lane.ring.drain()
             if data:
+                # 音频预处理：有条件增益 + 慢启动快释放压缩（提升弱句首信噪比）
+                from ..audio.preprocess import preprocess as _pp
+                data = _pp(data)
                 for seg in lane.vad.feed(data, lane.name):
                     self.bus.publish("seg", {
                         "lane": lane.name, "start_ms": seg.start_ms,
                         "end_ms": seg.end_ms, "dur_ms": seg.end_ms - seg.start_ms,
                     })
-                    # 背压入队：L2 超 drop 水位 drop-oldest（保最新实时段）
-                    if lane.backlog is not None:
-                        lane.backlog.enqueue(seg)
-                    else:
-                        lane.seg_q.put(seg)
-                    self.stats["segs"] += 1
-                    self._publish_backlog(lane)
+                    self._enqueue_seg(lane, seg)
             if lane.rep and lane.rep.done.is_set():
                 # 回放结束：排空残余后退出
                 time.sleep(0.2)
                 data = lane.ring.drain()
                 if data:
                     for seg in lane.vad.feed(data, lane.name):
-                        if lane.backlog is not None:
-                            lane.backlog.enqueue(seg)
-                        else:
-                            lane.seg_q.put(seg)
+                        self._enqueue_seg(lane, seg)
                 break
             time.sleep(0.005)
         # 收尾：确保 VAD 恢复基线灵敏度
         if reduced:
             lane.vad.set_threshold(base_thr)
             lane.vad.set_min_silence_ms(base_min_sil)
+
+    def _enqueue_seg(self, lane: LaneState, seg) -> None:
+        """入队封装：过短间隔段**合并到上一段**（治碎片+不丢音频）+ 维护调度状态。
+        合并规则：距上一段终点 < skip_short_gap_ms 且上一段仍在队列（未被 ASR 取走）
+        → 把本段 PCM 追加到上一段尾部、延长其 end_ms（音频不丢，碎片被吸收）。
+        上一段已被处理 → 本段单独入队。"""
+        merged = False
+        if lane.skip_short_gap_ms > 0 and lane._peek:
+            prev = lane._peek[-1]  # 队列里最后一段（即将/正在被处理的上一段）
+            gap = seg.start_ms - prev.end_ms
+            if prev is not None and gap < lane.skip_short_gap_ms:
+                # 合并：延长上一段（原地修改 SpeechSegment 字段）
+                prev.pcm = prev.pcm + seg.pcm
+                prev.end_ms = seg.end_ms
+                merged = True  # 不单独入队，音频已并入上一段
+                if os.environ.get("RTW_DEBUG_VAD"):
+                    print(f"[VAD-DBG] {lane.name} MERGE gap={gap}ms "
+                          f"(seg {seg.start_ms}-{seg.end_ms} → 并入 prev 至 {prev.end_ms})",
+                          flush=True)
+        if os.environ.get("RTW_DEBUG_VAD") and not merged:
+            print(f"[VAD-DBG] {lane.name} ENQUEUE {seg.start_ms}-{seg.end_ms} "
+                  f"(dur {seg.end_ms-seg.start_ms}ms)", flush=True)
+        if not merged:
+            was_empty = lane.seg_q.empty()
+            if lane.backlog is not None:
+                lane.backlog.enqueue(seg)
+            else:
+                lane.seg_q.put(seg)
+            lane._peek.append(seg)
+            if was_empty:
+                lane.front_ts = seg.start_ms
+            self.stats["segs"] += 1
+            self._publish_backlog(lane)
 
     def _publish_backlog(self, lane: LaneState) -> None:
         """积压状态/层级迁移时广播 "backlog" 事件（仅变化时发，避免刷屏）。"""
@@ -406,47 +501,6 @@ class Pipeline:
                 "depth": snap["depth"], "dropped": snap["dropped"],
                 "peak_depth": snap["peak_depth"],
             })
-
-    def _asr_worker_loop(self, lane: LaneState) -> None:
-        """ASR 识别循环：取段 → 整句解码 → 广播 → 送翻译。"""
-        assert self.asr is not None
-        while not self._stop.is_set():
-            try:
-                seg = lane.seg_q.get(timeout=1.0)
-            except queue.Empty:
-                continue
-            t0 = time.monotonic()
-            try:
-                res = self.asr.transcribe(seg.pcm, lane.name,
-                                         timeout=max(30.0, (seg.end_ms - seg.start_ms) / 1000 * 3))
-            except Exception as e:  # noqa: BLE001
-                self.stats["errors"] += 1
-                self.bus.publish("asr_err", {"lane": lane.name,
-                                            "error": f"{type(e).__name__}: {e!r}"})
-                continue
-            t_first = time.monotonic() - t0  # 整句模式：一次性出全文
-            text = res.get("text", "").strip()
-            if not text:
-                continue
-            self.stats["asr_done"] += 1
-            seg_id = f"{lane.name}-{seg.start_ms}"
-            # P4：段能量（RMS）→ 粗分说话人
-            import numpy as np
-            pcm_i16 = np.frombuffer(seg.pcm, dtype=np.int16).astype(np.float32)
-            rms = float(np.sqrt(np.mean(pcm_i16 ** 2))) if len(pcm_i16) else 0.0
-            speaker = self.diarizer.assign(lane.name, rms, seg.start_ms)
-            self._translations[seg_id] = []
-            self.bus.publish("asr", {
-                "lane": lane.name, "seg_id": seg_id,
-                "text": text, "language": res.get("language", ""),
-                "speaker": speaker,
-                "t_first_ms": int(t_first * 1000), "t_final_ms": int(t_first * 1000),
-            })
-            # P4：落盘（译文稍后由 _translate 完成时补写；seg_id 供精确回填）
-            self.store.add_line(lane.name, seg.start_ms, text,
-                               res.get("language", ""), speaker,
-                               seg_id=seg_id)
-            self._translate(lane.name, seg_id, text, res.get("language", ""))
 
     def _translate(self, lane: str, seg_id: str, text: str, src_lang: str) -> None:
         """fire-and-forget 调翻译 API（流式）；不阻塞 ASR worker。
@@ -492,8 +546,102 @@ class Pipeline:
                      encoding="utf-8")
 
     def run_lane_workers(self) -> None:
-        """为每个声道启动 ASR worker 线程（start() 之后调用）。"""
-        for lane in self.lanes:
-            t = threading.Thread(target=self._asr_worker_loop, args=(lane,), daemon=True)
-            t.start()
-            self._workers.append(t)
+        """启动 ASR 调度（start() 之后调用）。
+        单实例：单一调度器串行服务两通道队列（省内存）。max_speech 3s 短段
+        使单段解码快，排队堆积可控（p90 ~5s）。"""
+        t = threading.Thread(target=self._asr_dispatcher, daemon=True)
+        t.start()
+        self._workers.append(t)
+
+    def _asr_dispatcher(self) -> None:
+        """（备用）时间戳公平调度：单实例串行模式。双实例模式下不使用。"""
+        assert self.asr is not None
+        lanes = self.lanes
+        if not lanes:
+            return
+        # FIFO + 追赶机制：基础按入队先后（FIFO），但连续两次服务同一通道时，
+        # 把另一通道队首往前提一位（防止某通道因段多而长期饿死另一通道）。
+        last_lane = None
+        last2_lane = None
+        while not self._stop.is_set():
+            # 收集各通道队首（用影子 peek）
+            candidates = []
+            for lane in lanes:
+                if lane.seg_q.empty():
+                    continue
+                candidates.append(lane)
+            if not candidates:
+                time.sleep(0.01)
+                continue
+            # 追赶判定：连续两次都是同一通道 → 本次优先另一通道
+            boosted = None
+            if last_lane is not None and last_lane == last2_lane:
+                other = [l for l in lanes if l is not last_lane and not l.seg_q.empty()]
+                if other:
+                    boosted = other[0]
+            # 选择：有 boost 优先 boost；否则 FIFO（按 front_ts 最早，退化用入队序）
+            if boosted is not None:
+                chosen = boosted
+            else:
+                # FIFO：选 front_ts 最小的（最早入队的）
+                chosen = min(candidates, key=lambda l: (l.front_ts if l.front_ts is not None else 1<<62))
+            try:
+                seg = chosen.seg_q.get_nowait()
+            except queue.Empty:
+                time.sleep(0.005)
+                continue
+            self._process_asr_seg(chosen, seg)
+            last2_lane = last_lane
+            last_lane = chosen
+
+    def _process_asr_seg(self, lane: LaneState, seg) -> None:
+        """解码单个段（单实例：共享 self.asr 串行解码）。"""
+        t0 = time.monotonic()
+        try:
+            res = self.asr.transcribe(seg.pcm, lane.name,
+                                     timeout=max(30.0, (seg.end_ms - seg.start_ms) / 1000 * 3))
+        except Exception as e:  # noqa: BLE001
+            self.stats["errors"] += 1
+            self.bus.publish("asr_err", {"lane": lane.name,
+                                        "error": f"{type(e).__name__}: {e!r}"})
+            return
+        t_first = time.monotonic() - t0
+        text = res.get("text", "").strip()
+        if not text:
+            return
+        lane.vad.confirm_segment_processed()
+        self.stats["asr_done"] += 1
+        # 维护调度状态：记录本段终点（跳过判定用）
+        lane.last_seg_end_ms = max(lane.last_seg_end_ms, seg.end_ms)
+        # 弹出影子队首，用真实的新队首更新时间戳（精确 peek，非近似）
+        if lane._peek:
+            lane._peek.pop(0)
+        if lane._peek:
+            lane.front_ts = lane._peek[0].start_ms
+        else:
+            lane.front_ts = None
+        seg_id = f"{lane.name}-{seg.start_ms}"
+        # 记录 ASR 延迟（供动态 pre_pad：共享 EMA + per-lane 对照）
+        d_ms = t_first * 1000.0
+        self._asr_delay_ema = (self._pad_alpha * d_ms
+                              + (1 - self._pad_alpha) * self._asr_delay_ema)
+        self._lane_asr_delay[lane.name] = d_ms
+        # 说话人：录制时实时粗分（live_diarize）或仅离线精修
+        speaker = ""
+        if self.live_diarize:
+            import numpy as np
+            pcm_i16 = np.frombuffer(seg.pcm, dtype=np.int16).astype(np.float32)
+            rms = float(np.sqrt(np.mean(pcm_i16 ** 2))) if len(pcm_i16) else 0.0
+            speaker = self.diarizer.assign(lane.name, rms, seg.start_ms)
+        self._translations[seg_id] = []
+        self.bus.publish("asr", {
+            "lane": lane.name, "seg_id": seg_id,
+            "text": text, "language": res.get("language", ""),
+            "speaker": speaker,
+            "t_first_ms": int(t_first * 1000), "t_final_ms": int(t_first * 1000),
+        })
+        # P4：落盘（译文稍后由 _translate 完成时补写；seg_id 供精确回填）
+        self.store.add_line(lane.name, seg.start_ms, text,
+                           res.get("language", ""), speaker,
+                           seg_id=seg_id)
+        self._translate(lane.name, seg_id, text, res.get("language", ""))

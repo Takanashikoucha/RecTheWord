@@ -155,6 +155,22 @@ class MainWindow(QMainWindow):
         bus.subscribe("seg", self.on_seg)
         bus.subscribe("notice", self.on_notice)
 
+        # 高频「钉底」定时器：持续把实时/完整两个字幕区滚动条拉到底。
+        # 与浮窗同理——setWidgetResizable 下容器 resize 异步，on_asr 里一次性
+        # setValue(maximum()) 常被随后 resize 用旧值覆盖（value≠max，最新行被裁）。
+        pin = QTimer(self)
+        pin.timeout.connect(self._pin_stages_to_bottom)
+        pin.start(50)
+
+    def _pin_stages_to_bottom(self) -> None:
+        for sc in (getattr(self, "stage_scroll", None),
+                   getattr(self, "full_stage_scroll", None)):
+            if sc is None:
+                continue
+            sb = sc.verticalScrollBar()
+            if sb.maximum() > 0:
+                sb.setValue(sb.maximum())
+
     # ---------- 构建 ----------
 
     def _build_topbar(self) -> QWidget:
