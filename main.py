@@ -23,10 +23,11 @@ log = logging.getLogger("rtw.main")
 
 
 def main() -> int:
-    from rtw.core.config import load_config
+    from rtw.core.config import load_config, load_user_settings
     from rtw.core.events import EventBus
 
-    cfg = load_config()
+    # 用户级设置（~/.rectheword/settings.yaml）优先于 config.yaml
+    cfg = load_config(user_overrides=load_user_settings())
     bus = EventBus()
 
     # 无显示环境（CI/测试）：只做配置加载验证

@@ -54,17 +54,17 @@ class StepIndicator(QLabel):
     def _update_display(self) -> None:
         if self._state == "done":
             dot = "✓"
-            style = "color:#34d399;"
+            style = "color:#2a8646;"
         elif self._state == "active":
             dot = "●"
-            style = "color:#2fb8e6;"
+            style = "color:#008390;"
         elif self._state == "error":
             dot = "✗"
-            style = "color:#ff6b6b;"
+            style = "color:#c0392b;"
         else:
             dot = "○"
-            style = "color:#5a6578;"
-        txt_color = "#eceff4" if self._state in ("active", "done") else "#9aa3b2"
+            style = "color:#9a8f82;"
+        txt_color = "#251c15" if self._state in ("active", "done") else "#64584f"
         self.setText(f'<span style="{style}font-size:14px;">{dot}</span>'
                      f'  <span style="font-size:13px;color:{txt_color};">{self._icon} {self._text}</span>')
         self.setTextFormat(Qt.TextFormat.RichText)
@@ -160,7 +160,7 @@ class SplashWindow(QDialog):
 
         # 版本号
         ver = QLabel("v2.0 · Qwen3-ASR 0.6B · CPU")
-        ver.setStyleSheet("color:#5a6578; font-size:11px;")
+        ver.setStyleSheet("color:#9a8f82; font-size:11px;")
         root.addWidget(ver, alignment=Qt.AlignmentFlag.AlignRight)
 
     def set_step(self, n: int, text: str, detail: str = "") -> None:

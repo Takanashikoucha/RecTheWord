@@ -194,6 +194,11 @@ class MainWindow(QMainWindow):
         tb_min.setObjectName("primaryBtn")
         tb_min.clicked.connect(self._on_generate_minutes)
         lay.addWidget(tb_min)
+        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn.setObjectName("ghostBtn")
+        self.settings_btn.setToolTip("打开设置面板（语言 / 翻译 API / 外观 / VAD / 说话人）")
+        self.settings_btn.clicked.connect(self._on_open_settings)
+        lay.addWidget(self.settings_btn)
         self.ov_toggle = QPushButton("🪟 浮窗")
         self.ov_toggle.setObjectName("ghostBtn")
         self.ov_toggle.setToolTip("切换字幕浮窗显隐")
@@ -385,6 +390,89 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_overlay_ref"):
             self._overlay_ref.set_font_size(sizes[idx])
         self._toast(f"字幕字号 {sizes[idx]} px")
+
+    # ---- 设置面板（齿轮按钮）----
+
+    def _on_open_settings(self) -> None:
+        """打开设置对话框（传入 cfg / pipeline / api / bus）。"""
+        from .settings_dialog import SettingsDialog
+        cfg = self.pipeline.cfg if self.pipeline is not None else None
+        if cfg is None:
+            self._toast("设置不可用：管线未连接")
+            return
+        dlg = SettingsDialog(cfg, parent=self,
+                            pipeline=self.pipeline,
+                            api=getattr(self.pipeline, "api", None),
+                            bus=self.bus)
+        self._pending_diar = dlg.diarization_enabled()
+        dlg.settings_saved.connect(self._on_settings_saved)
+        dlg.exec()
+
+    def _on_settings_saved(self, prop, hot, restart) -> None:
+        """保存回调：持久化 + 热生效 + 需重启提示。"""
+        from ..core.config import save_user_settings
+        try:
+            save_user_settings(prop)
+        except Exception as e:
+            self._toast(f"设置保存失败：{e}")
+            return
+        applied = self._apply_hot(prop)
+        # 说话人分离（对话框单独携带，不在 Config 里）
+        if self.pipeline is not None and hasattr(self, "_pending_diar"):
+            self.pipeline.diarizer.enabled = self._pending_diar
+            applied.append("说话人分离")
+        msgs = []
+        if applied:
+            msgs.append(f"已生效：{', '.join(applied)}")
+        if restart:
+            msgs.append(f"需重启生效：{', '.join(restart)}")
+        if not msgs:
+            msgs.append("设置已保存")
+        self._toast(" · ".join(msgs))
+        # 同步左栏字号 combo 到新值（若改变）
+        try:
+            sizes = (24, 28, 32)
+            if prop.ui.font_size in sizes:
+                self.font_spin.setCurrentIndex(sizes.index(prop.ui.font_size))
+        except Exception:
+            pass
+
+    def _apply_hot(self, prop) -> list[str]:
+        """把可热生效的设置应用到运行中的 pipeline / overlay / 主窗。返回已应用项。"""
+        applied: list[str] = []
+        p = self.pipeline
+        # 语言
+        if p is not None:
+            p.target_lang = prop.ui.target_lang
+            applied.append("目标语言")
+        # 翻译 API：更新客户端 + 重跑 health
+        if p is not None and getattr(p, "api", None) is not None:
+            api = p.api
+            api.base = prop.api.base_url.rstrip("/")
+            api.key = prop.api.api_key
+            api.model = prop.api.model
+            api.translate_timeout = prop.api.translate_timeout_s
+            api.minutes_timeout = prop.api.minutes_timeout_s
+            api.misconfigured = not api.base
+            api.available = not api.misconfigured
+            if api.available:
+                api.health()
+            applied.append("翻译 API")
+        # VAD 灵敏度：更新基线 + 各 lane 实时 setter
+        if p is not None:
+            p.cfg.vad.threshold = prop.vad.threshold
+            p.cfg.vad.min_silence_ms = prop.vad.min_silence_ms
+            for lane in p.lanes:
+                lane.vad.set_threshold(prop.vad.threshold)
+                lane.vad.set_min_silence_ms(prop.vad.min_silence_ms)
+            applied.append("VAD 灵敏度")
+        # 字幕外观 / 字号 / 显示原文 → 浮窗
+        ov = self.overlay
+        if ov is not None:
+            ov.set_theme(prop.ui.overlay_theme)
+            ov.set_font_size(prop.ui.font_size)
+            applied.append("字幕外观")
+        return applied
 
     def _build_right(self) -> QWidget:
         w = QWidget()

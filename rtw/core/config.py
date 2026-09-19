@@ -55,8 +55,11 @@ class ApiCfg:
 @dataclass
 class UiCfg:
     overlay_theme: str = "glass"     # glass | solid | outline | light
+    subtitle_theme: str = "light"    # 主窗外观：light（暖白纸感，v3 默认）| dark（旧深色）
     font_size: int = 28
     show_original: bool = True
+    target_lang: str = "zh"          # 翻译目标语言（修复：原先 getattr fallback 恒为 zh）
+    source_lang: str = ""            # 源语言；空 = 自动检测（信任 ASR 每段返回的 language）
 
 
 @dataclass
@@ -104,16 +107,110 @@ def _merge(dc_obj: Any, data: dict) -> None:
             setattr(dc_obj, k, v)
 
 
-def load_config(path: str | Path | None = None) -> Config:
+def load_config(path: str | Path | None = None,
+                user_overrides: dict | None = None) -> Config:
+    """加载配置：defaults(config.yaml) ← user(settings.yaml 覆盖层)。
+
+    user_overrides 的结构与 config.yaml 同形（顶层键为 section 名），
+    其中的值优先于 config.yaml（用户级持久化设置）。
+    """
     p = Path(path) if path else APP_ROOT / "config.yaml"
     cfg = Config()
+    merged: dict = {}
     if p.exists():
         raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        _merge(cfg.audio, raw.get("audio", {}))
-        _merge(cfg.vad, raw.get("vad", {}))
-        _merge(cfg.asr, raw.get("asr", {}))
-        _merge(cfg.api, raw.get("api", {}))
-        _merge(cfg.ui, raw.get("ui", {}))
-        _merge(cfg.session, raw.get("session", {}))
-        _merge(cfg.backlog, raw.get("backlog", {}))
+        merged.update(raw)
+    if user_overrides:
+        # 浅合并：section 级覆盖（用户值优先）
+        for sec, val in user_overrides.items():
+            if isinstance(val, dict):
+                merged.setdefault(sec, {})
+                if isinstance(merged[sec], dict):
+                    merged[sec].update(val)
+                else:
+                    merged[sec] = val
+            else:
+                merged[sec] = val
+    _merge(cfg.audio, merged.get("audio", {}))
+    _merge(cfg.vad, merged.get("vad", {}))
+    _merge(cfg.asr, merged.get("asr", {}))
+    _merge(cfg.api, merged.get("api", {}))
+    _merge(cfg.ui, merged.get("ui", {}))
+    _merge(cfg.session, merged.get("session", {}))
+    _merge(cfg.backlog, merged.get("backlog", {}))
     return cfg
+
+
+# ---- 用户级持久化（~/.rectheword/settings.yaml，不污染仓库 config.yaml）----
+
+USER_SETTINGS_DIR = Path("~/.rectheword").expanduser()
+USER_SETTINGS_FILE = USER_SETTINGS_DIR / "settings.yaml"
+
+# 面板可持久化的 section（只 dump 这些，避免把模型路径等敏感/绝对路径写出去）
+_PERSIST_SECTIONS = ("ui", "api", "vad")
+
+
+def _settings_path() -> Path:
+    return USER_SETTINGS_FILE
+
+
+def load_user_settings() -> dict:
+    """读取用户级设置（不存在/损坏 → 空 dict，不影响启动）。"""
+    p = _settings_path()
+    if not p.exists():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_user_settings(cfg: Config) -> Path:
+    """把面板涉及的 section 持久化到用户级 settings.yaml。
+
+    只写 _PERSIST_SECTIONS（ui/api/vad），不写死整个 Config。
+    """
+    data: dict = {}
+    for sec in _PERSIST_SECTIONS:
+        dc = getattr(cfg, sec)
+        data[sec] = {k: v for k, v in vars(dc).items()}
+    p = _settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                 encoding="utf-8")
+    return p
+
+
+# 热生效 vs 需重启 的字段分组（供 UI 决定是否提示重启）
+HOT_APPLICABLE = {
+    "ui": ("target_lang", "source_lang", "subtitle_theme", "overlay_theme",
+           "font_size", "show_original"),
+    "api": ("base_url", "api_key", "model", "translate_timeout_s",
+            "minutes_timeout_s"),
+    "vad": ("threshold", "min_silence_ms"),
+}
+RESTART_REQUIRED = {
+    "asr": ("model", "device", "compute_type", "threads", "segment_policy"),
+    "audio": ("source", "sample_rate", "chunk_ms"),
+    "backlog": ("enabled", "high_watermark", "low_watermark", "drop_watermark",
+                "maxsize", "recover_grace_s", "boost_threshold",
+                "boost_min_silence_ms"),
+    "session": ("dir",),
+}
+
+
+def classify_changes(old: Config, new: Config) -> tuple[list[str], list[str]]:
+    """对比新旧配置，返回 (热生效项, 需重启项) 的字段路径列表。"""
+    hot: list[str] = []
+    restart: list[str] = []
+    for sec, fields in HOT_APPLICABLE.items():
+        o, n = getattr(old, sec), getattr(new, sec)
+        for f in fields:
+            if getattr(o, f, None) != getattr(n, f, None):
+                hot.append(f"{sec}.{f}")
+    for sec, fields in RESTART_REQUIRED.items():
+        o, n = getattr(old, sec), getattr(new, sec)
+        for f in fields:
+            if getattr(o, f, None) != getattr(n, f, None):
+                restart.append(f"{sec}.{f}")
+    return hot, restart
