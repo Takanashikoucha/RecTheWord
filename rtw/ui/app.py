@@ -1,15 +1,17 @@
 """UI 装配：splash → 主窗口 + 透明浮窗，EventBus 定时泵驱动。
 
 启动序列（用户约束 ⑤⑥）：
-  1. splash 显示
-  2. 环境检查（模型文件）→ StatusMachine("env_check")
-  3. Pipeline 启动（VAD/ASR 加载、API 健康检查，各自广播状态）
-  4. splash 关闭 → 主窗口 + 浮窗出现
+  1. splash 显示（入场动画）
+  2. 后台线程依次执行 env_check → model_ensure → vad_load → asr_load → api_health
+  3. 主线程循环 processEvents + bus.pump，splash 实时跟随进度
+  4. 任一阶段 ERROR → splash 显示错误 + 重试/退出按钮
+  5. 全部 DONE → 关闭 splash，弹主窗口 + 浮窗
 """
 from __future__ import annotations
 
 import logging
 import sys
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ def run_app(cfg, bus) -> int:
     from PySide6.QtWidgets import QApplication
 
     from ..core.status_machine import StatusMachine
+    from ..core.model_manager import ModelManager
     from ..llm_api.client import LlmApiClient
     from ..pipeline.orchestrator import Pipeline
     from .main_window import MainWindow
@@ -35,51 +38,112 @@ def run_app(cfg, bus) -> int:
     splash.show()
     app.processEvents()
 
-    # ---- 2. 环境检查 ----
-    sm_env = StatusMachine(bus, "env_check")
-    sm_env.begin("检查模型文件…")
-    app.processEvents()
-    model_dir = APP_ROOT / "models" / "Qwen3-ASR-0.6B"
-    vad_path = APP_ROOT / "models/silero_vad/silero_vad.onnx"
-    if not model_dir.exists() or not vad_path.exists():
-        sm_env.error("模型文件缺失，请先运行 install.ps1")
-        app.processEvents()
-        return 1
-    sm_env.finish("环境就绪")
-    app.processEvents()
+    # ---- 2. 后台启动序列 ----
+    startup_result: dict = {}
 
-    # ---- 3. pipeline 预热（ASR 加载 + API 健康；采集等「开始会议」才启动）----
-    api = LlmApiClient(cfg.api.base_url, cfg.api.api_key, cfg.api.model)
-    pipe = Pipeline(cfg, bus, str(model_dir), api,
-                   target_lang=getattr(cfg.ui, "target_lang", "zh"))
-    pipe.setup_lanes()
-    pipe.warmup()            # 只加载 ASR + 检查 API，不开采集
-    pipe.run_lane_workers()
-    # 未配置翻译 API → 一次性告知（不逐句报错）
-    if api.misconfigured:
-        bus.publish("notice", "未配置翻译 API（config.yaml api.base_url），仅显示原文")
-    bus.publish("status", ("ready", 0, None))
+    def _startup_sequence() -> None:
+        """在后台线程中依次执行所有启动阶段，通过 StatusMachine 广播进度。"""
+        try:
+            # 阶段 1：环境检查（模型文件是否存在 / 从 ModelScope 下载）
+            sm_env = StatusMachine(bus, "env_check")
+            sm_env.begin("检查模型文件…")
+            model_dir = APP_ROOT / "models" / "Qwen3-ASR-0.6B"
+            vad_path = APP_ROOT / "models" / "silero_vad" / "silero_vad.onnx"
+
+            mm = ModelManager(cfg.models_dir(), bus)
+            if not model_dir.exists() or not any(model_dir.iterdir()):
+                mm.ensure("qwen3_asr")
+            if not vad_path.exists():
+                try:
+                    mm.ensure("silero_vad")
+                except Exception as e:
+                    log.warning("silero_vad 下载失败：%s（VAD 将不可用）", e)
+
+            if not model_dir.exists() or not any(model_dir.iterdir()):
+                sm_env.error("ASR 模型文件缺失，请先运行 install.ps1")
+                startup_result["error"] = "model_missing"
+                return
+            sm_env.finish("环境就绪")
+
+            # 阶段 2-4：VAD 加载 + ASR 预热 + API 健康检查
+            api = LlmApiClient(cfg.api.base_url, cfg.api.api_key, cfg.api.model)
+            pipe = Pipeline(cfg, bus, str(model_dir), api,
+                           target_lang=getattr(cfg.ui, "target_lang", "zh"))
+            pipe.setup_lanes()
+            pipe.warmup()
+            pipe.run_lane_workers()
+
+            # 未配置翻译 API → 一次性告知（不逐句报错）
+            if api.misconfigured:
+                bus.publish("notice", "未配置翻译 API（config.yaml api.base_url），仅显示原文")
+
+            startup_result["pipe"] = pipe
+            startup_result["api"] = api
+            startup_result["cfg"] = cfg
+            startup_result["ok"] = True
+        except Exception as e:
+            log.exception("启动失败")
+            startup_result["error"] = str(e)
+
+    startup_thread = threading.Thread(target=_startup_sequence, daemon=True)
+    startup_thread.start()
+
+    # ---- 3. 主线程：循环 pump 直到启动完成或出错 ----
+    def _pump_and_check() -> None:
+        bus.pump(0.02)
+        app.processEvents()
+        if "ok" in startup_result or "error" in startup_result:
+            check_timer.stop()
+            if startup_result.get("ok"):
+                _show_main_windows(app, bus, splash, startup_result)
+            else:
+                splash.show_error(startup_result.get("error", "未知错误"))
+
+    check_timer = QTimer()
+    check_timer.timeout.connect(_pump_and_check)
+    check_timer.start(33)
+
+    # 如果启动线程在第一次 pump 之前就完成了，立即处理
     app.processEvents()
+    if "ok" in startup_result or "error" in startup_result:
+        check_timer.stop()
+        if startup_result.get("ok"):
+            _show_main_windows(app, bus, splash, startup_result)
+        else:
+            splash.show_error(startup_result.get("error", "未知错误"))
+
+    return app.exec()
+
+
+def _show_main_windows(app, bus, splash, result: dict) -> None:
+    """启动成功后：关闭 splash，弹主窗口 + 浮窗。"""
+    from PySide6.QtCore import QTimer
+    from .main_window import MainWindow
+    from .overlay import OverlayWindow
+
+    pipe = result["pipe"]
+    cfg = result["cfg"]
+
     # 关窗自动收尾（stop 幂等）
     app.aboutToQuit.connect(pipe.stop)
 
-    # ---- 4. 主窗口 + 浮窗 ----
-    main_win = MainWindow(bus, model_path=str(model_dir),
+    # 主窗口
+    main_win = MainWindow(bus, model_path="",
                          target_lang=getattr(cfg.ui, "target_lang", "zh"),
                          pipeline=pipe)
     main_win.show()
 
+    # 浮窗
     overlay = OverlayWindow()
-    overlay.set_theme(cfg.ui.overlay_theme)
+    overlay.set_theme(getattr(cfg.ui, "overlay_theme", "glass"))
     overlay.show()
-    # 居中偏下
     geo = app.primaryScreen().availableGeometry()
     overlay.move(geo.center().x() - overlay.width() // 2,
                  geo.bottom() - overlay.height() - 80)
 
     # 浮窗事件 → 主窗口联动
     overlay.hide_requested.connect(main_win.close)
-    main_win.attach_overlay(overlay)  # 状态切换同步到浮窗
+    main_win.attach_overlay(overlay)
 
     # 事件桥接：asr/trans → 浮窗（字幕 + 延迟 + 译文回填）
     ov_lines: dict[str, object] = {}
@@ -88,7 +152,7 @@ def run_app(cfg, bus) -> int:
         line = overlay.add_line(p["lane"])
         line.set_interim(p["text"])
         ov_lines[p["seg_id"]] = line
-        overlay.set_latency(p.get("t_first_ms"))  # 延迟显示
+        overlay.set_latency(p.get("t_first_ms"))
 
     def on_trans(p) -> None:
         line = ov_lines.get(p["seg_id"])
@@ -104,10 +168,13 @@ def run_app(cfg, bus) -> int:
     bus.subscribe("trans", on_trans)
     bus.subscribe("trans_err", on_trans_err)
 
-    # 录音状态 → 浮窗状态栏（启动默认「待机」，点「开始会议」才录音）
+    # 录音状态 → 浮窗状态栏
     overlay.set_idle()
 
-    # ---- EventBus 泵 ----
+    # 关闭 splash
+    splash.close()
+
+    # EventBus 泵
     timer = QTimer()
     timer.timeout.connect(lambda: bus.pump(0.02))
     timer.start(33)
@@ -116,5 +183,3 @@ def run_app(cfg, bus) -> int:
     clk = QTimer()
     clk.timeout.connect(overlay.tick_clock)
     clk.start(1000)
-
-    return app.exec()

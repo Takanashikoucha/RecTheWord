@@ -100,11 +100,11 @@ QFrame#subLine:hover {{ background: rgba(255,255,255,.03); }}
 #srcText {{ font-size: 20px; font-weight: 500; }}
 #srcTextInterim {{ font-size: 20px; color: #aab4c4; }}
 #trText {{ font-size: 14px; color: {TOKENS['dim']}; }}
-#tsText {{ font-family: Consolas,monospace; font-size: 10.5px; color: #5a6578; }}
+#tsText {{ font-family: Consolas,monospace; font-size: 11px; color: #5a6578; }}
 
 /* ---- 底部 dock ---- */
 #dock {{ background: {TOKENS['panel']}; border-top: 1px solid {TOKENS['hair']}; }}
-#statK {{ color: {TOKENS['dim']}; font-size: 10.5px; letter-spacing: .8px; }}
+#statK {{ color: {TOKENS['dim']}; font-size: 11px; letter-spacing: .8px; }}
 #statV {{ font-family: Consolas,monospace; font-size: 13.5px; font-weight: 600; }}
 
 /* ---- 状态 toast ---- */
@@ -170,15 +170,24 @@ LIGHT_OVERRIDE = """
 """
 
 SPLASH_QSS = f"""
-QDialog {{ background: {TOKENS['bg']}; }}
+QDialog {{ background: qradialgradient(cx:0.5,cy:0.3,rx:0.8,ry:0.8,
+    stop:0 #141b26, stop:1 {TOKENS['bg']}); }}
 #splashLogo {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-    stop:0 {TOKENS['grad1']}, stop:1 {TOKENS['grad2']}); border-radius: 18px; }}
-#splashLogoText {{ color: #0b0e13; font-weight: 800; font-size: 34px; }}
-#splashTitle {{ font-size: 26px; font-weight: 700; }}
+    stop:0 {TOKENS['grad1']}, stop:1 {TOKENS['grad2']}); border-radius: 14px;
+    color: #0b0e13; font-weight: 800; font-size: 18px; }}
+#splashTitle {{ font-size: 24px; font-weight: 700; color: {TOKENS['txt']}; }}
+#splashTagline {{ color: {TOKENS['dim']}; font-size: 12px; }}
 #splashStep {{ color: {TOKENS['dim']}; font-size: 14px; }}
 #splashDetail {{ color: #5a6578; font-size: 12px; font-family: Consolas,monospace; }}
-QProgressBar {{ background: {TOKENS['hair']}; border: none; border-radius: 4px;
+#stepRow {{ background: transparent; }}
+QProgressBar {{ background: {TOKENS['hair']}; border: none; border-radius: 3px;
                text-align: center; height: 6px; }}
 QProgressBar::chunk {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-               stop:0 {TOKENS['grad1']}, stop:1 {TOKENS['grad2']}); border-radius: 4px; }}
+               stop:0 {TOKENS['grad1']}, stop:1 {TOKENS['grad2']}); border-radius: 3px; }}
+QPushButton#retryBtn {{ background: {TOKENS['accent']}; border: none;
+    color: #08131c; font-weight: 600; padding: 8px 24px; border-radius: 8px; }}
+QPushButton#retryBtn:hover {{ background: #5ecbe8; }}
+QPushButton#quitBtn {{ background: {TOKENS['panel2']}; border: 1px solid {TOKENS['hair']};
+    color: {TOKENS['dim']}; padding: 8px 24px; border-radius: 8px; }}
+QPushButton#quitBtn:hover {{ color: {TOKENS['txt']}; border-color: #3a4657; }}
 """

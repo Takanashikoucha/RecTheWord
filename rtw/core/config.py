@@ -34,9 +34,7 @@ class VadCfg:
 
 @dataclass
 class AsrCfg:
-    engine: str = "qwen3"            # qwen3 | qwen3_streaming
     model: str = "Qwen/Qwen3-ASR-0.6B"
-    streaming_model: str = "qfuxa/qwen3-asr-0.6b-streaming"
     device: str = "cpu"
     compute_type: str = "int8"
     threads: int = 8
@@ -51,22 +49,18 @@ class ApiCfg:
     model: str = ""
     translate_timeout_s: float = 15.0
     minutes_timeout_s: float = 120.0
-    streaming: bool = True
 
 
 @dataclass
 class UiCfg:
     overlay_theme: str = "glass"     # glass | solid | outline | light
     font_size: int = 28
-    opacity: float = 0.95
     show_original: bool = True
-    auto_meeting_mode: bool = False
 
 
 @dataclass
 class SessionCfg:
     dir: str = "~/.rectheword/sessions"
-    record_audio: bool = True
 
 
 @dataclass

@@ -17,9 +17,7 @@ vad:
   max_speech_ms: 8000
 
 asr:
-  engine: qwen3
   model: Qwen/Qwen3-ASR-0.6B
-  streaming_model: qfuxa/qwen3-asr-0.6b-streaming
   device: cpu
   compute_type: int8
   threads: 8                 # P5：锁定 8 核目标机的物理核数
@@ -32,15 +30,11 @@ api:
   model: ""
   translate_timeout_s: 15
   minutes_timeout_s: 120
-  streaming: true
 
 ui:
   overlay_theme: glass     # glass | solid | outline | light
   font_size: 28
-  opacity: 0.95
   show_original: true
-  auto_meeting_mode: false
 
 session:
   dir: ~/.rectheword/sessions
-  record_audio: true

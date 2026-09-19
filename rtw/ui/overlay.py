@@ -81,7 +81,7 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(OVERLAY_QSS)
-        self.resize(980, 340)  # 上下两分区需要更高
+        self.resize(800, 280)  # 缩小默认尺寸，减少屏幕占用
         self._drag_pos: QPoint | None = None
         self._theme = "glass"
         self._clock_start = time.monotonic()
@@ -97,8 +97,11 @@ class OverlayWindow(QWidget):
         lay.setContentsMargins(22, 16, 22, 18)
         lay.setSpacing(12)
 
-        # 头部
-        head = QHBoxLayout()
+        # 头部（拖拽区域）
+        self.head_widget = QWidget()
+        self.head_widget.setObjectName("ovHead")
+        head = QHBoxLayout(self.head_widget)
+        head.setContentsMargins(0, 0, 0, 0)
         dot = QLabel()
         dot.setObjectName("ovDot")
         dot.setFixedSize(8, 8)
@@ -120,9 +123,9 @@ class OverlayWindow(QWidget):
             elif tip == "隐藏":
                 b.clicked.connect(self.hide)
             else:
-                b.clicked.connect(lambda: self.setFixedWidth(720 if win.width() > 720 else 980))
+                b.clicked.connect(lambda: self.setFixedWidth(600 if win.width() > 600 else 800))
             head.addWidget(b)
-        lay.addLayout(head)
+        lay.addWidget(self.head_widget)
 
         # 字幕区：上下两分区（🎤 麦 上 / 🔊 扬 下），各自独立滚动
         # 关键：scroll 自身、viewport、container 三层都要关掉自动填充背景，
@@ -223,8 +226,11 @@ class OverlayWindow(QWidget):
     # ---- 拖拽 ----
 
     def mousePressEvent(self, e) -> None:
+        """仅在头部区域按下时才启动拖拽（避免滚动字幕时误拖窗口）。"""
         if e.button() == Qt.MouseButton.LeftButton:
-            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            pos = e.position().toPoint()
+            if self.head_widget.geometry().contains(pos):
+                self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e) -> None:
         if self._drag_pos and e.buttons() & Qt.MouseButton.LeftButton:
@@ -238,3 +244,6 @@ class OverlayWindow(QWidget):
         clock = f"{s // 60:02d}:{s % 60:02d}"
         lat = f"<b>{self._last_latency}</b>" if self._last_latency is not None else "<b>-</b>"
         self.meta.setText(f"延迟 {lat} ms · {clock}")
+        # 状态栏扩展：状态 + 时长 + 句数
+        status = self.status_lbl.text()
+        self.status_lbl.setText(f"{status} · {clock}")

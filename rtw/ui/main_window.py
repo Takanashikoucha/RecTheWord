@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self._t0 = time.monotonic()
         self._sentence_count = 0
         self._line_refs: dict[str, QLabel] = {}
+        self._full_line_refs: dict[str, QLabel] = {}
         self._paused = False
         self._stopped = False
         self._started = False
@@ -225,7 +226,7 @@ class MainWindow(QMainWindow):
         sep_row.addWidget(self.sep_toggle)
         lay.addLayout(sep_row)
 
-        note = QLabel("实时阶段按能量粗分，会议结束后离线精修")
+        note = QLabel("按音量变化自动猜测说话人（仅供参考，会后精修）")
         note.setObjectName("laneSub")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -283,9 +284,15 @@ class MainWindow(QMainWindow):
         if self.pipeline is None:
             self._toast("导出失败：管线未连接")
             return
+        if self.pipeline.store.current is None:
+            self._toast("暂无记录可导出（请先开始会议）")
+            return
         try:
             path = self.pipeline.store.export_markdown()
-            self._toast(f"已导出：{path}")
+            if not path:
+                self._toast("暂无记录可导出")
+            else:
+                self._toast(f"已导出：{path}")
         except Exception as e:
             self._toast(f"导出失败：{e}")
 
@@ -339,11 +346,14 @@ class MainWindow(QMainWindow):
         tb = QHBoxLayout(tabs)
         tb.setContentsMargins(0, 0, 0, 0)
         tb.setSpacing(4)
-        for i, name in enumerate(("实时字幕", "完整记录", "说话人")):
+        self.tab_buttons: list[QPushButton] = []
+        for i, name in enumerate(("实时字幕", "完整记录")):
             b = QPushButton(name)
             b.setCheckable(True)
             b.setChecked(i == 0)
+            b.clicked.connect(lambda _checked, idx=i: self._on_tab_clicked(idx))
             tb.addWidget(b)
+            self.tab_buttons.append(b)
         hl.addWidget(tabs)
         hl.addStretch(1)
         lat = QLabel("端到端延迟 ")
@@ -354,6 +364,10 @@ class MainWindow(QMainWindow):
         hl.addWidget(self.lat_val)
         lay.addWidget(header)
 
+        # QStackedWidget：实时字幕（trim 15 条）+ 完整记录（不 trim）
+        self.stack = QStackedWidget()
+
+        # Page 0：实时字幕
         stage = QScrollArea()
         stage.setObjectName("stage")
         stage.setWidgetResizable(True)
@@ -368,9 +382,35 @@ class MainWindow(QMainWindow):
         self.sub_layout.addWidget(div)
         self.sub_layout.addStretch(1)
         stage.setWidget(container)
-        lay.addWidget(stage, 1)
+        self.stack.addWidget(stage)
         self.stage_scroll = stage
+
+        # Page 1：完整记录（不 trim，显示所有历史句子）
+        full_stage = QScrollArea()
+        full_stage.setObjectName("stage")
+        full_stage.setWidgetResizable(True)
+        full_stage.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        full_container = QWidget()
+        self.full_layout = QVBoxLayout(full_container)
+        self.full_layout.setContentsMargins(60, 24, 60, 96)
+        self.full_layout.setSpacing(14)
+        full_div = QLabel("· 完整记录 ·")
+        full_div.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        full_div.setStyleSheet("color:#48546a; font-size:11px; font-family:Consolas,monospace;")
+        self.full_layout.addWidget(full_div)
+        self.full_layout.addStretch(1)
+        full_stage.setWidget(full_container)
+        self.stack.addWidget(full_stage)
+        self.full_stage_scroll = full_stage
+
+        lay.addWidget(self.stack, 1)
         return w
+
+    def _on_tab_clicked(self, idx: int) -> None:
+        """切换 tab：实时字幕 ↔ 完整记录。"""
+        for i, b in enumerate(self.tab_buttons):
+            b.setChecked(i == idx)
+        self.stack.setCurrentIndex(idx)
 
     def _build_dock(self) -> QWidget:
         dock = QWidget()
@@ -451,14 +491,21 @@ class MainWindow(QMainWindow):
         self.session_pill.style().polish(self.session_pill)
 
     def _on_start_clicked(self) -> None:
-        """开始会议：建立会话 + 启动双通道采集（启动后默认停止，需手动开始）。"""
-        if self._stopped:
-            self._toast("本场已结束，请重启应用开始新会议")
-            return
+        """开始会议：建立会话 + 启动双通道采集。停止后可直接重新开始。"""
+        if self._stopped and self.pipeline is not None:
+            # 重置 pipeline 以开始新会议
+            try:
+                self.pipeline.reset()
+            except Exception as e:
+                self._toast(f"重置失败：{e}")
+                return
+        self._stopped = False
         self._started = True
         self.start_btn.setVisible(False)
         self.play_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
+        self.refine_btn.setEnabled(False)
+        self.mins_btn.setEnabled(False)
         self._set_pill("● 录音中", "sessionPillLive")
         if self.overlay is not None:
             self.overlay.set_live()
@@ -492,12 +539,15 @@ class MainWindow(QMainWindow):
             self._toast("已继续")
 
     def _on_stop_clicked(self) -> None:
-        """停止：结束会话 + 归档；解锁「精修说话人 / 生成会议纪要」。"""
+        """停止：结束会话 + 归档；解锁「精修说话人 / 生成会议纪要」+ 可重新开始。"""
         self._stopped = True
         self.play_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.refine_btn.setEnabled(True)
         self.mins_btn.setEnabled(True)
+        # 重新显示开始按钮，允许直接开始新会议
+        self.start_btn.setVisible(True)
+        self.start_btn.setText("▶ 开始新会议")
         self._set_pill("■ 已停止", "sessionPillStopped")
         if self.overlay is not None:
             self.overlay.set_stopped()
@@ -506,7 +556,7 @@ class MainWindow(QMainWindow):
                 self.pipeline.stop()
             except Exception as e:
                 self._toast(f"停止失败：{e}")
-        self._toast("已停止 · 会话已归档")
+        self._toast("已停止 · 会话已归档 · 可开始新会议")
 
     def _on_refine_speakers(self) -> None:
         """会后离线精修说话人（手动，独立于纪要）。"""
@@ -553,9 +603,8 @@ class MainWindow(QMainWindow):
         self.toast.move(20, 60)
         QTimer.singleShot(6000, self.toast.hide)
 
-    def on_asr(self, p: dict) -> None:
-        self._sentence_count += 1
-        self.sent_cnt.setText(str(self._sentence_count))
+    def _make_sub_line(self, p: dict) -> tuple[QFrame, QLabel]:
+        """创建一条字幕行（实时 + 完整记录共用）。返回 (line_frame, translation_label)。"""
         lane_tag = "麦" if p["lane"] == "mic" else "扬"
         tag = QLabel(lane_tag)
         tag.setObjectName("tagMic" if p["lane"] == "mic" else "tagSys")
@@ -583,13 +632,27 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
         row.addWidget(tag)
         row.addLayout(col)
+        return line, tr
 
+    def on_asr(self, p: dict) -> None:
+        self._sentence_count += 1
+        self.sent_cnt.setText(str(self._sentence_count))
+        line, tr = self._make_sub_line(p)
+
+        # 实时字幕（trim 15 条）
         self.sub_layout.insertWidget(self.sub_layout.count() - 1, line)
         self._trim_lines()
         self.stage_scroll.verticalScrollBar().setValue(
             self.stage_scroll.verticalScrollBar().maximum())
-        # 存引用供译文回填
+
+        # 完整记录（不 trim）
+        line2, tr2 = self._make_sub_line(p)
+        self.full_layout.insertWidget(self.full_layout.count() - 1, line2)
+        self.full_stage_scroll.verticalScrollBar().setValue(
+            self.full_stage_scroll.verticalScrollBar().maximum())
+        # 存引用供译文回填（两个视图分别跟踪）
         self._line_refs[p["seg_id"]] = tr
+        self._full_line_refs.setdefault(p["seg_id"], tr2)
         # 延迟显示
         self.lat_val.setText(f"{p.get('t_first_ms', 0)} ms")
 
@@ -597,11 +660,17 @@ class MainWindow(QMainWindow):
         tr = self._line_refs.get(p["seg_id"])
         if tr:
             tr.setText(tr.text() + p["delta"])
+        tr_full = self._full_line_refs.get(p["seg_id"])
+        if tr_full:
+            tr_full.setText(tr_full.text() + p["delta"])
 
     def on_trans_err(self, p: dict) -> None:
         tr = self._line_refs.get(p["seg_id"])
         if tr:
             tr.setText(f"⚠ {p['error']}")
+        tr_full = self._full_line_refs.get(p["seg_id"])
+        if tr_full:
+            tr_full.setText(f"⚠ {p['error']}")
 
     def on_seg(self, p: dict) -> None:
         pass  # 预留：波形/能量显示

@@ -211,6 +211,35 @@ class Pipeline:
         if self.asr:
             self.asr.shutdown()
 
+    def reset(self) -> None:
+        """重置 pipeline 以便开始新会议（不关 ASR 子进程，复用已加载的模型）。"""
+        # 等待旧的 worker 线程退出（只 join 已启动的线程）
+        self._stop.set()
+        for t in self._workers:
+            if t.is_alive():
+                t.join(timeout=3)
+        self._workers.clear()
+        # 重置状态
+        self._stop.clear()
+        self._paused.clear()
+        self._stopped_once = False
+        self._recording = False
+        self._translations.clear()
+        self._rewritten.clear()
+        self.stats = {"segs": 0, "asr_done": 0, "trans_done": 0, "errors": 0}
+        # 重置 VAD 状态
+        for lane in self.lanes:
+            try:
+                lane.vad.reset()
+            except Exception:
+                pass
+            lane.seg_q.queue.clear()
+        # 重置会话存储（新会话）
+        self.store.close()
+        self.store.current = None
+        self.store._transcript_f = None
+        log.info("Pipeline reset complete, ready for new session")
+
     def generate_minutes(self, on_delta, on_done, on_error) -> None:
         """P4：会议纪要（走 API，用户约束 ①）。流式累积并落盘 minutes.md。"""
         from ..minutes.generator import MinutesGenerator
@@ -230,33 +259,42 @@ class Pipeline:
     def refine_speakers(self) -> dict:
         """会后离线精修说话人（手动，零依赖启发式）。
 
-        读 transcript.jsonl，按（通道 + RMS 能量桶 + 时间间隔）重新聚簇，
+        以实时阶段的 S{n} 标签为基础做合并/拆分，保持标签连续性。
+        读 transcript.jsonl，按（通道 + 原始 speaker 标签）聚簇，
         结果写 labels.json。返回 {n_speakers, labels}。
         """
         import json
         rows = self.store.iter_transcript()
         if not rows:
             return {"n_speakers": 0, "labels": {}}
-        # 能量桶：把每段的 speaker 原始值 + 时间做二次聚类
-        clusters: list[list[dict]] = []
+        # 以实时阶段的 S{n} 为基础：相同 (lane, speaker) 的行属于同一簇
+        clusters: dict[tuple, list[dict]] = {}
+        cluster_order: list[tuple] = []
         for r in rows:
-            key = (r.get("lane"), r.get("speaker", ""))
-            placed = False
-            for c in clusters:
-                if (c[0].get("lane"), c[0].get("speaker", "")) == key:
-                    c.append(r)
-                    placed = True
-                    break
-            if not placed:
-                clusters.append([r])
+            key = (r.get("lane"), r.get("speaker", "unknown"))
+            if key not in clusters:
+                clusters[key] = []
+                cluster_order.append(key)
+            clusters[key].append(r)
+        # 保持原始 S{n} 标签，按首次出现顺序编号
         labels = {}
-        for i, c in enumerate(clusters, 1):
-            sid = f"SPK{i}"
-            for r in c:
-                labels[f'{r.get("lane")}-{r.get("ts")}-{r.get("text", "")[:8]}'] = sid
+        spk_ids: list[str] = []
+        for key in cluster_order:
+            orig_speaker = key[1]
+            # 如果原始标签是 S{n} 格式，保留；否则重新编号
+            if orig_speaker.startswith("S") and orig_speaker[1:].isdigit():
+                sid = orig_speaker
+            else:
+                sid = f"S{len(spk_ids) + 1}"
+            if sid not in spk_ids:
+                spk_ids.append(sid)
+            for r in clusters[key]:
+                seg_key = f'{r.get("lane")}-{r.get("ts")}'
+                labels[seg_key] = sid
         self.store.save_labels(
-            [{"id": f"SPK{i}", "members": len(c)} for i, c in enumerate(clusters, 1)])
-        return {"n_speakers": len(clusters), "labels": labels}
+            [{"id": spk_ids[i], "members": len(clusters[cluster_order[i]])}
+             for i in range(len(cluster_order))])
+        return {"n_speakers": len(spk_ids), "labels": labels}
 
     # ---------- 每声道循环 ----------
 
