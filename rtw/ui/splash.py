@@ -27,10 +27,10 @@ TOTAL_STEPS = 5
 
 # 步骤定义：(op_name, 显示名, 图标)
 STEPS = [
-    ("env_check", "环境检查", "⚙"),
-    ("vad_load", "语音活动检测", "🎯"),
-    ("asr_load", "ASR 模型加载", "🧠"),
-    ("api_health", "翻译 API 检查", "🌐"),
+    ("env_check", "环境检查", "[ENV]"),
+    ("vad_load", "语音活动检测", "[VAD]"),
+    ("asr_load", "ASR 模型加载", "[ASR]"),
+    ("api_health", "翻译 API 检查", "[API]"),
     ("ready", "就绪", "✓"),
 ]
 

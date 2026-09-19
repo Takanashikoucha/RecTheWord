@@ -3,7 +3,7 @@
 设计要点（方案 Part A）：
 - 分组：语言 / 翻译 API / 字幕外观 / VAD 灵敏度 / 说话人分离 / 高级（只读提示）。
 - 从当前 cfg 取值初始化；「保存」emit settings_saved(proposed_cfg, hot, restart)。
-- 「测试连接」用 LlmApiClient.health() 探活，toast 反馈 ✓/✗。
+- 「测试连接」用 LlmApiClient.health() 探活，toast 反馈成功/失败。
 - 高级项（ASR/音频/backlog/会话目录）只读展示 + 标注「需重启生效」，不在面板改。
 """
 from __future__ import annotations

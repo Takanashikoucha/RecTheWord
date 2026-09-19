@@ -133,13 +133,13 @@ class OverlayWindow(QWidget):
             head.addWidget(b)
         lay.addWidget(self.head_widget)
 
-        # 字幕区：上下两分区（🎤 麦 上 / 🔊 扬 下），各自独立滚动
+        # 字幕区：上下两分区（麦 上 / 扬 下），各自独立滚动
         # 关键：scroll 自身、viewport、container 三层都要关掉自动填充背景，
         # 否则会盖住浮窗的半透明底（白色块 bug）
         self.sections: dict[str, dict] = {}
         for sec_name, sec_title, sec_obj in (
-            ("mic", "🎤 麦克风", "secMic"),
-            ("sys", "🔊 扬声器", "secSys"),
+            ("mic", "麦克风", "secMic"),
+            ("sys", "扬声器", "secSys"),
         ):
             sec_head = QLabel(sec_title)
             sec_head.setObjectName(sec_obj)

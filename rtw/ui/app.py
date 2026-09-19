@@ -141,7 +141,7 @@ def _show_main_windows(app, bus, splash, result: dict) -> None:
     main_win.show()
 
     # 浮窗：启动时默认隐藏（用户要求）。先定位好，但不 show()；
-    # 由主窗「— 最小化」或「🪟 浮窗」按钮唤起。
+    # 由主窗「— 最小化」或「浮窗」按钮唤起。
     overlay = OverlayWindow()
     overlay.set_theme(getattr(cfg.ui, "overlay_theme", "glass"))
     geo = app.primaryScreen().availableGeometry()
@@ -165,7 +165,7 @@ def _show_main_windows(app, bus, splash, result: dict) -> None:
         QTimer.singleShot(0, lambda: (main_win.show(), main_win.activateWindow(), main_win.raise_()))
     overlay.hide_requested.connect(_back_to_main)
 
-    # 主窗口 ⇄ 浮窗 互斥切换（点主窗口「🪟 隐藏浮窗」→ 只剩浮窗；
+    # 主窗口 ⇄ 浮窗 互斥切换（点主窗口「隐藏浮窗」→ 只剩浮窗；
     # 点浮窗「—」隐藏 → 只剩主窗口，此时主窗口按钮变「显示浮窗」可唤回）
     def _toggle_overlay() -> None:
         if overlay.isHidden():

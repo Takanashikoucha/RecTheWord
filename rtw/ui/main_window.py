@@ -194,12 +194,12 @@ class MainWindow(QMainWindow):
         tb_min.setObjectName("primaryBtn")
         tb_min.clicked.connect(self._on_generate_minutes)
         lay.addWidget(tb_min)
-        self.settings_btn = QPushButton("⚙ 设置")
+        self.settings_btn = QPushButton("设置")
         self.settings_btn.setObjectName("ghostBtn")
         self.settings_btn.setToolTip("打开设置面板（语言 / 翻译 API / 外观 / VAD / 说话人）")
         self.settings_btn.clicked.connect(self._on_open_settings)
         lay.addWidget(self.settings_btn)
-        self.ov_toggle = QPushButton("🪟 浮窗")
+        self.ov_toggle = QPushButton("浮窗")
         self.ov_toggle.setObjectName("ghostBtn")
         self.ov_toggle.setToolTip("切换字幕浮窗显隐")
         self.ov_toggle.clicked.connect(self.toggle_overlay_requested.emit)
@@ -631,7 +631,7 @@ class MainWindow(QMainWindow):
         """按浮窗当前显隐更新切换按钮文案。"""
         if self.overlay is None:
             return
-        self.ov_toggle.setText("🪟 显示浮窗" if self.overlay.isHidden() else "🪟 隐藏浮窗")
+        self.ov_toggle.setText("显示浮窗" if self.overlay.isHidden() else "隐藏浮窗")
 
     # ---- 自定义标题栏：拖动 / 双击最大化 ----
 
