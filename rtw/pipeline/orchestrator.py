@@ -25,11 +25,13 @@ from ..core.status_machine import StatusMachine
 from ..audio.ring_buffer import RingBuffer
 from ..audio.replay_source import ReplaySource
 from ..audio.devices import DeviceManager, WasapiSource
+from ..audio.linux_capture import LinuxDeviceManager, LinuxCapture, probe_backend
 from ..vad.silero import SileroVad, SpeechSegment
 from ..asr.worker import AsrWorkerClient
 from ..llm_api.client import LlmApiClient
 from ..diarize.coarse import CoarseDiarizer
 from ..session.store import SessionStore
+from .backlog_guard import BacklogGuard
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +43,9 @@ class LaneState:
     vad: SileroVad
     rep: ReplaySource | None = None
     wasapi: WasapiSource | None = None
+    lin: LinuxCapture | None = None
     seg_q: "queue.Queue[SpeechSegment]" = field(default_factory=queue.Queue)
+    backlog: "BacklogGuard | None" = None  # 积压自适应守护（setup_lanes 装配）
 
 
 class Pipeline:
@@ -67,6 +71,7 @@ class Pipeline:
         self.diarizer = CoarseDiarizer()
         self._translations: dict[str, list[str]] = {}  # seg_id → 译文增量
         self._rewritten: dict[str, str] = {}          # seg_id → 完整译文
+        self._backlog_last: dict[str, str] = {}       # lane → 最近一次广播的积压状态
 
     def start_session(self, meta: dict | None = None) -> None:
         """开会话（meta 缺省自动生成）。"""
@@ -80,9 +85,17 @@ class Pipeline:
     # ---------- 启动 ----------
 
     def setup_lanes(self) -> None:
-        """按 config 建立各声道（wasapi 采集 或 replay 注入）。"""
+        """按 config 建立各声道（wasapi / alsa(Linux) 采集 或 replay 注入）。
+
+        平台自适应：source 缺省/为空时，Windows 走 wasapi，Linux 走 alsa。
+        """
         a = self.cfg.audio
-        self.device_mgr = DeviceManager()
+        src = (a.source or "").lower()
+        if src not in ("wasapi", "alsa", "replay"):
+            import platform
+            src = "wasapi" if platform.system() == "Windows" else "alsa"
+            a.source = src
+        self.device_mgr = DeviceManager() if src == "wasapi" else LinuxDeviceManager()
         pairs = [("mic", a.replay_mic), ("sys", a.replay_sys)]
         # VAD 加载显式广播（splash 第 2 步）
         sm_vad = StatusMachine(self.bus, "vad_load")
@@ -100,10 +113,18 @@ class Pipeline:
                             min_silence_ms=self.cfg.vad.min_silence_ms,
                             max_speech_ms=max_speech)
             lane = LaneState(name=name, ring=ring, vad=vad)
+            # 积压自适应：有界队列 + 背压守护（drop-oldest 保最新实时段）
+            bl = self.cfg.backlog
+            lane.seg_q = queue.Queue(maxsize=max(bl.maxsize, bl.high_watermark + 1))
+            lane.backlog = BacklogGuard(bl, lane.seg_q)
             if a.source == "wasapi":
                 dev_idx = getattr(a, f"{name}_device", None)
                 lane.wasapi = WasapiSource(ring, name, device_index=dev_idx,
                                           device_manager=self.device_mgr)
+            elif a.source == "alsa":
+                dev_idx = getattr(a, f"{name}_device", None)
+                lane.lin = LinuxCapture(ring, name, device_id=dev_idx,
+                                       device_manager=self.device_mgr)
             elif a.source == "replay" and replay_file:
                 from pathlib import Path
                 p = Path(replay_file)
@@ -128,7 +149,10 @@ class Pipeline:
             if l.name == lane and l.wasapi:
                 l.wasapi.switch(device_index)
                 return
-        raise ValueError(f"unknown lane or not wasapi: {lane}")
+            if l.name == lane and l.lin:
+                l.lin.switch(device_index)
+                return
+        raise ValueError(f"unknown lane or not a capture source: {lane}")
 
     def _vad_path(self):
         from pathlib import Path
@@ -177,6 +201,8 @@ class Pipeline:
                 lane.rep.start()
             if lane.wasapi:
                 lane.wasapi.start()
+            if lane.lin:
+                lane.lin.start()
 
     # 兼容旧调用
     def start(self) -> None:
@@ -234,6 +260,9 @@ class Pipeline:
             except Exception:
                 pass
             lane.seg_q.queue.clear()
+            if lane.backlog is not None:
+                lane.backlog.reset()
+        self._backlog_last.clear()
         # 重置会话存储（新会话）
         self.store.close()
         self.store.current = None
@@ -299,12 +328,38 @@ class Pipeline:
     # ---------- 每声道循环 ----------
 
     def _lane_loop(self, lane: LaneState) -> None:
-        """消费 RingBuffer → VAD 切句 → 送入 ASR 队列。暂停时丢弃音频。"""
+        """消费 RingBuffer → VAD 切句 → 送入 ASR 队列。暂停时丢弃音频。
+
+        积压自适应（两级）：
+        - L1 源头减量：队列超高水位 → 动态抬 VAD 阈值/拉长时间门限，少产段少喂 ASR。
+        - L2 drop-oldest：L1 后仍超 drop 水位 → 丢最旧段兜底（保最新实时段）。
+        压力缓解（recovered）→ VAD 参数自动恢复正常灵敏度。
+        """
+        bl = self.cfg.backlog
+        base_thr = self.cfg.vad.threshold
+        base_min_sil = self.cfg.vad.min_silence_ms
+        reduced = False
         while not self._stop.is_set():
             if self._paused.is_set():
                 lane.ring.drain()  # 丢弃，避免恢复后处理陈旧语音
+                if reduced:  # 暂停时恢复 VAD 灵敏度
+                    lane.vad.set_threshold(base_thr)
+                    lane.vad.set_min_silence_ms(base_min_sil)
+                    reduced = False
                 time.sleep(0.05)
                 continue
+            # L1 源头减量：根据积压状态动态调 VAD（每轮检查，平滑过渡）
+            if lane.backlog is not None and bl.enabled:
+                want_reduce = lane.backlog.should_reduce()
+                if want_reduce and not reduced:
+                    lane.vad.set_threshold(bl.boost_threshold)
+                    lane.vad.set_min_silence_ms(bl.boost_min_silence_ms)
+                    reduced = True
+                elif (not want_reduce) and reduced:
+                    # 队列回落到高水位以下 → 恢复正常灵敏度
+                    lane.vad.set_threshold(base_thr)
+                    lane.vad.set_min_silence_ms(base_min_sil)
+                    reduced = False
             data = lane.ring.drain()
             if data:
                 for seg in lane.vad.feed(data, lane.name):
@@ -312,20 +367,45 @@ class Pipeline:
                         "lane": lane.name, "start_ms": seg.start_ms,
                         "end_ms": seg.end_ms, "dur_ms": seg.end_ms - seg.start_ms,
                     })
-                    lane.seg_q.put(seg)
+                    # 背压入队：L2 超 drop 水位 drop-oldest（保最新实时段）
+                    if lane.backlog is not None:
+                        lane.backlog.enqueue(seg)
+                    else:
+                        lane.seg_q.put(seg)
                     self.stats["segs"] += 1
+                    self._publish_backlog(lane)
             if lane.rep and lane.rep.done.is_set():
                 # 回放结束：排空残余后退出
                 time.sleep(0.2)
                 data = lane.ring.drain()
                 if data:
                     for seg in lane.vad.feed(data, lane.name):
-                        lane.seg_q.put(seg)
+                        if lane.backlog is not None:
+                            lane.backlog.enqueue(seg)
+                        else:
+                            lane.seg_q.put(seg)
                 break
             time.sleep(0.005)
-        # 排空剩余段
-        while not lane.seg_q.empty():
-            pass  # 段已由上面的循环送出
+        # 收尾：确保 VAD 恢复基线灵敏度
+        if reduced:
+            lane.vad.set_threshold(base_thr)
+            lane.vad.set_min_silence_ms(base_min_sil)
+
+    def _publish_backlog(self, lane: LaneState) -> None:
+        """积压状态/层级迁移时广播 "backlog" 事件（仅变化时发，避免刷屏）。"""
+        g = lane.backlog
+        if g is None:
+            return
+        key = (g.state.value, g.level())
+        last = self._backlog_last.get(lane.name)
+        if key != last:
+            self._backlog_last[lane.name] = key
+            snap = g.snapshot()
+            self.bus.publish("backlog", {
+                "lane": lane.name, "state": snap["state"], "level": snap["level"],
+                "depth": snap["depth"], "dropped": snap["dropped"],
+                "peak_depth": snap["peak_depth"],
+            })
 
     def _asr_worker_loop(self, lane: LaneState) -> None:
         """ASR 识别循环：取段 → 整句解码 → 广播 → 送翻译。"""

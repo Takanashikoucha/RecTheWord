@@ -19,8 +19,11 @@ TOKENS = {
 
 MAIN_QSS = f"""
 * {{ font-family: "Segoe UI","Microsoft YaHei","PingFang SC",sans-serif; }}
-QWidget {{ background: {TOKENS['bg']}; color: {TOKENS['txt']}; font-size: 13px; }}
-QMainWindow, QDialog {{ background: {TOKENS['bg']}; }}
+/* 注意：不再用全局 QWidget{{background}} —— 那会让透明浮窗的子控件回退成不透明黑底。
+   背景改为按具体窗口/面板显式设置（见下方 #centralRoot / #topbar / #leftPanel 等）。 */
+QWidget {{ color: {TOKENS['txt']}; font-size: 13px; }}
+QMainWindow {{ background: {TOKENS['bg']}; }}
+#centralRoot {{ background: {TOKENS['bg']}; }}
 
 /* ---- 顶栏 ---- */
 #topbar {{ background: {TOKENS['panel']}; border-bottom: 1px solid {TOKENS['hair']}; }}

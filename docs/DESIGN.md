@@ -5,7 +5,7 @@
 
 ## 1. 目标
 
-Windows 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低延迟实时处理：
+Windows / Linux 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低延迟实时处理：
 
 1. **双通道实时识别 + 翻译**：麦克风（WASAPI 输入）+ 扬声器（WASAPI 环回）各自
    独立 VAD + ASR；中/日/英自动语种检测（韩/德可扩展）。
@@ -45,11 +45,14 @@ rtw/
   │   └─ model_manager.py     # ModelManager（ModelScope 下载，断点续传）
   ├─ audio/
   │   ├─ ring_buffer.py       # RingBuffer（30s 环形缓冲）
-  │   └─ replay_source.py     # ReplaySource（WASAPI 抽象 / 测试注入）
-  ├─ vad/silero.py           # SileroVad（ONNX，32ms 窗，流式判停 + 强制断句）
+  │   ├─ replay_source.py     # ReplaySource（WASAPI 抽象 / 测试注入）
+  │   ├─ devices.py           # DeviceManager + WasapiSource（Windows WASAPI 输入/环回）
+  │   └─ linux_capture.py     # LinuxCapture + LinuxDeviceManager（PW·Pulse monitor + ALSA mic）
+  ├─ vad/silero.py           # SileroVad（ONNX，32ms 窗，流式判停 + 强制断句 + 运行时可调阈值）
   ├─ asr/worker.py           # AsrWorker 子进程（spawn + Pipe IPC，Qwen3 整句解码）
   ├─ llm_api/client.py       # LlmApiClient（OpenAI 兼容，SSE 流式 + _EnvProxyFix）
   ├─ pipeline/orchestrator.py # Pipeline（VAD→ASR→翻译 + 会话 + 说话人 + 纪要编排）
+  └─ pipeline/backlog_guard.py # BacklogGuard（积压自适应：L1 源头减量 + L2 drop-oldest）
   ├─ session/store.py        # SessionStore
   ├─ diarize/coarse.py       # CoarseDiarizer（实时粗分）
   ├─ minutes/generator.py    # MinutesGenerator
@@ -64,9 +67,9 @@ rtw/
 ### 数据流（运行时）
 
 ```
-WASAPI（环回 sys + 麦克风 mic）/ ReplaySource（测试注入）
+采集源（Windows=WASAPI / Linux=PW·Pulse monitor + ALSA / 测试=ReplaySource）
   ├─ sys → RingBuffer → SileroVad ─┐
-  └─ mic → RingBuffer → SileroVad ─┴→ 各自 seg_q
+  └─ mic → RingBuffer → SileroVad ─┴→ 各自 seg_q（BacklogGuard 监控深度）
         ├─ _lane_loop：drain ring → VAD 切句 → seg_q（publish "seg"）
         ├─ _asr_worker_loop：seg → AsrWorker.transcribe（整句）
         │     → publish "asr"（含 t_first_ms / speaker）
@@ -108,14 +111,38 @@ splash 进度条据此显式告知用户，杜绝无声等待。
 翻译 / 纪要**仅走 API**。API 不可达时：ASR 照常出字幕，翻译/纪要**显式报错**
 （"翻译 API 不可用，仅显示原文" / Connection refused），不静默失败。
 
+### 4.5 跨平台音频采集（Windows / Linux 对称）
+两平台提供同形接口（`start/stop/join/switch` + 往 RingBuffer 写 PCM16 16kHz mono），
+`orchestrator` 按 `audio.source` 分派，上层零感知：
+- **Windows**：`devices.py`（WASAPI 输入 + 官方环回虚拟设备）。
+- **Linux**：`linux_capture.py`（mic 走 `arecord`/ALSA；sys 环回走 PulseAudio/PipeWire
+  的 **sink monitor source**——Linux 下 WASAPI 环回的等价物）。后端自动探测
+  PipeWire → PulseAudio → 纯 ALSA。
+- 非对应平台优雅降级：`enumerate` 返回空列表，链路可走 `replay` 注入做端到端测试。
+- `audio.source` 缺省时**平台自适应**（Windows→wasapi / Linux→alsa）。
+
+### 4.6 积压自适应恢复（两级，防 ASR 无限堆积）
+ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩坏 + 性能下降。
+`BacklogGuard` 两级应对（`backlog.*` 配置）：
+- **L1 源头减量**：队列深度超 `high_watermark` → 动态调 VAD 双参，**少产段、少喂 ASR**
+  （治本，而非事后截断）：阈值抬高（`boost_threshold` 0.5→0.62，更不敏感 → 更少起句）
+  + 最短静音门限缩短（`boost_min_silence_ms` 800→500ms，更早断句 → 段更短更快喂完）。
+- **L2 drop-oldest 兜底**：L1 后仍超 `drop_watermark` → 丢弃最旧段、保最新实时段。
+- **有界兜底**：`seg_q` 硬上限 `maxsize`，绝不撑爆内存。
+- **恢复防抖**：回落到 `low_watermark` 且维持 `recover_grace_s` 才宣告恢复，
+  避免阈值来回抖动。状态机 NORMAL/BACKLOGGED/RECOVERED，经 `"backlog"` 事件广播。
+
 ## 5. 边缘情况与失败模式
 
 - **环回不可用** → 降级仅 mic 单路；纪要仍可用文字流源。
 - **模型首跑下载** → ModelManager 断点续传 + 进度回报 splash；`MODELSCOPE_CACHE`
   可预置。
 - **API 端点不可达** → 降级仅原文 + 显式提示（见 4.4）。
-- **CPU 过载** → 两路共享单 ASR worker 串行推理 + VAD 门控；突发负载会排队
-  （已知瓶颈，后续可做 worker 并发池）。
+- **CPU 过载 / ASR 积压** → 两路共享单 ASR worker 串行推理；突发负载会排队，
+  由 `BacklogGuard` 两级自适应缓解（L1 源头减量 + L2 drop-oldest，见 4.6），
+  防无限堆积。
+- **Linux 音频后端缺失**（无 arecord / 无 Pulse·PipeWire）→ `install.sh` 给出
+  安装提示；`probe_backend` 自动探测回落；极端缺失时该通道降级，另一通道仍可用。
 - **会话目录损坏/缺文件** → 仍可打开现存部分。
 - **httpx no_proxy 含 `::1,[::1]`** → httpx 0.28 解析崩溃，`_EnvProxyFix` 上下文
   临时归一化（已修）。
@@ -133,7 +160,8 @@ splash 进度条据此显式告知用户，杜绝无声等待。
 
 ## 7. 假设
 
-- Windows 10/11 x64，Python 3.10–3.12，首跑有网。
+- Windows 10/11 x64 **或 Linux（Debian/Ubuntu/Fedora 等，需 PipeWire 或 PulseAudio）**，
+  Python 3.10–3.12，首跑有网。
 - 实时 = 整句解码 1-3 秒出文本；翻译只跟 final（省 token、防抖动）。
 - 实时界面「🎤自己 / 🔊对方」两路；说话人粗分实时做，精修可选。
 - 停止后会话归档；纪要为用户手动触发。
@@ -145,4 +173,6 @@ splash 进度条据此显式告知用户，杜绝无声等待。
 3. 1x 实时（`test_realtime_1x`）：83s 双通道长跑 0 错误，双通道均出声。
 4. 硬指标（`test_acceptance`）：冷启动 <15s、首字 p50<1.0/p95<1.5、2h 内存 <500MB。
 5. UI（`test_ui_smoke`）：三窗口实例化 + 事件注入 + 截图验证。
-6. 完整流程：启动 → 双通道实时 + 翻译 → 停止 → 会话归档 → 生成纪要 → 导出。
+6. 积压自适应（`test_backlog_adapt`）：两级水位 / drop-oldest 保最新 / 有界 /
+   grace 状态机 / reset，7 项全绿。
+7. 完整流程：启动 → 双通道实时 + 翻译 → 停止 → 会话归档 → 生成纪要 → 导出。

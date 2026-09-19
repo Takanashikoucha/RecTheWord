@@ -76,8 +76,14 @@ class OverlayWindow(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        # 注意：不再加 Tool——Tool 窗口不进任务栏、不支持最小化。
+        # 要去掉 Tool 才能让浮窗「最小化进任务栏」（用户明确要求）。
+        # 仍是无边框 + 透明 + 置顶（悬浮字幕定位不变）。
+        # 关键：显式带上 Window 基本类型 bit。否则 QWidget 顶级窗口会被 Qt 默认
+        # 当作 Tool（不进任务栏、不能最小化）。带上 Window 后才能最小化进任务栏。
         self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(OVERLAY_QSS)
@@ -114,14 +120,14 @@ class OverlayWindow(QWidget):
         self.meta.setObjectName("ovMeta")
         self.meta.setTextFormat(Qt.TextFormat.RichText)
         head.addWidget(self.meta)
-        for icon, tip in (("⇱", "紧凑"), ("—", "隐藏"), ("✕", "关闭")):
+        # 浮窗按钮：「紧凑」+「✕ 关闭（切回主窗口）」。
+        # 去掉「— 最小化」（最小化进任务栏有问题）；保留「✕」用于切回主窗口。
+        for icon, tip in (("⇱", "紧凑"), ("✕", "切回主窗口")):
             b = QPushButton(icon)
             b.setObjectName("cbtn")
             b.setToolTip(tip)
-            if tip == "关闭":
+            if tip == "切回主窗口":
                 b.clicked.connect(self.hide_requested.emit)
-            elif tip == "隐藏":
-                b.clicked.connect(self.hide)
             else:
                 b.clicked.connect(lambda: self.setFixedWidth(600 if win.width() > 600 else 800))
             head.addWidget(b)
@@ -223,14 +229,30 @@ class OverlayWindow(QWidget):
         self._theme = theme
         self.setStyleSheet(OVERLAY_QSS + ("\n" + LIGHT_OVERRIDE if theme == "light" else ""))
 
+    def recenter_bottom(self, screen_geo) -> None:
+        """回到默认位置（屏幕底部居中）。再次显示浮窗时调用。"""
+        self.move(screen_geo.center().x() - self.width() // 2,
+                  screen_geo.bottom() - self.height() - 80)
+
     # ---- 拖拽 ----
 
     def mousePressEvent(self, e) -> None:
-        """仅在头部区域按下时才启动拖拽（避免滚动字幕时误拖窗口）。"""
+        """整个浮窗都可拖拽移动。
+
+        优先用合成器原生 startSystemMove()（Wayland 下最可靠，KWin 接管拖动）；
+        不可用时回退到手算 move()。子控件（按钮/滚动条）各自消费事件不冒泡。
+        """
         if e.button() == Qt.MouseButton.LeftButton:
-            pos = e.position().toPoint()
-            if self.head_widget.geometry().contains(pos):
-                self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            wh = self.windowHandle()
+            if wh is not None and hasattr(wh, "startSystemMove"):
+                try:
+                    wh.startSystemMove()
+                    e.accept()
+                    return
+                except Exception:
+                    pass
+            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
 
     def mouseMoveEvent(self, e) -> None:
         if self._drag_pos and e.buttons() & Qt.MouseButton.LeftButton:

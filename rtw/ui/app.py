@@ -36,6 +36,9 @@ def run_app(cfg, bus) -> int:
     # ---- 1. splash ----
     splash = SplashWindow()
     splash.show()
+    # 关键：立即订阅 status 事件。否则启动线程发出的进度事件会在 splash 订阅前
+    # 就被 pump 掉（竞态），导致进度条卡在 0% 直接闪到主窗口。
+    bus.subscribe("status", splash.on_status)
     app.processEvents()
 
     # ---- 2. 后台启动序列 ----
@@ -77,6 +80,10 @@ def run_app(cfg, bus) -> int:
             if api.misconfigured:
                 bus.publish("notice", "未配置翻译 API（config.yaml api.base_url），仅显示原文")
 
+            # 阶段 5：就绪（驱动 splash 最后一步 + 进度条满格）
+            sm_ready = StatusMachine(bus, "ready")
+            sm_ready.begin("所有组件已加载")
+            sm_ready.finish("就绪")
             startup_result["pipe"] = pipe
             startup_result["api"] = api
             startup_result["cfg"] = cfg
@@ -133,17 +140,41 @@ def _show_main_windows(app, bus, splash, result: dict) -> None:
                          pipeline=pipe)
     main_win.show()
 
-    # 浮窗
+    # 浮窗：启动时默认隐藏（用户要求）。先定位好，但不 show()；
+    # 由主窗「— 最小化」或「🪟 浮窗」按钮唤起。
     overlay = OverlayWindow()
     overlay.set_theme(getattr(cfg.ui, "overlay_theme", "glass"))
-    overlay.show()
     geo = app.primaryScreen().availableGeometry()
     overlay.move(geo.center().x() - overlay.width() // 2,
                  geo.bottom() - overlay.height() - 80)
+    # 不调 overlay.show() → 默认隐藏
 
     # 浮窗事件 → 主窗口联动
-    overlay.hide_requested.connect(main_win.close)
     main_win.attach_overlay(overlay)
+
+    # 主窗「— 最小化」= 切到悬浮界面：主窗最小化（进任务栏，可还原）+ 唤起浮窗。
+    # 用 singleShot(0) 把对方 show 推迟到事件循环，避免同帧竞争。
+    def _minimize_to_overlay() -> None:
+        main_win.showMinimized()
+        QTimer.singleShot(0, lambda: (overlay.show(), overlay.activateWindow(), overlay.raise_()))
+    main_win.minimize_requested.connect(_minimize_to_overlay)
+
+    # 浮窗「✕ 关闭」= 切回主窗口：浮窗最小化（进任务栏）+ 唤起主窗（不退出进程）
+    def _back_to_main() -> None:
+        overlay.showMinimized()
+        QTimer.singleShot(0, lambda: (main_win.show(), main_win.activateWindow(), main_win.raise_()))
+    overlay.hide_requested.connect(_back_to_main)
+
+    # 主窗口 ⇄ 浮窗 互斥切换（点主窗口「🪟 隐藏浮窗」→ 只剩浮窗；
+    # 点浮窗「—」隐藏 → 只剩主窗口，此时主窗口按钮变「显示浮窗」可唤回）
+    def _toggle_overlay() -> None:
+        if overlay.isHidden():
+            overlay.recenter_bottom(app.primaryScreen().availableGeometry())
+            overlay.show()
+        else:
+            overlay.hide()
+        main_win._sync_ov_button()
+    main_win.toggle_overlay_requested.connect(_toggle_overlay)
 
     # 事件桥接：asr/trans → 浮窗（字幕 + 延迟 + 译文回填）
     ov_lines: dict[str, object] = {}

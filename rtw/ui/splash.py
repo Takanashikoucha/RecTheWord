@@ -171,7 +171,8 @@ class SplashWindow(QDialog):
             if step_num < n:
                 ind.set_state("done")
             elif step_num == n:
-                ind.set_state("active")
+                # 最后一步（就绪）达成时标 done（绿勾），中间步骤标 active（蓝点）
+                ind.set_state("done" if n == TOTAL_STEPS else "active")
             else:
                 ind.set_state("pending")
         self.detail_lbl.setText(detail)

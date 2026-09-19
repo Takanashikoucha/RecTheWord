@@ -1,6 +1,6 @@
 # RecTheWord v2 配置（锚定仓库根）
 audio:
-  source: wasapi            # wasapi（生产默认）| replay（仅测试注入）
+  source: ""              # 缺省=平台自适应（Windows→wasapi / Linux→alsa）；显式可选 wasapi | alsa | replay
   mic_device: null
   sys_device: null
   sample_rate: 16000
@@ -35,6 +35,17 @@ ui:
   overlay_theme: glass     # glass | solid | outline | light
   font_size: 28
   show_original: true
+
+backlog:
+  # ASR 积压自适应恢复（两级）：ASR 处理跟不上 VAD 产段速度时防止无限堆积
+  enabled: true
+  high_watermark: 8      # 队列深度超此值 → L1 源头减量（动态抬 VAD 阈值/拉长时间门限，少产段）
+  low_watermark: 3       # 回落到此值以下 → 恢复正常灵敏度
+  drop_watermark: 12     # L1 后仍超此值 → L2 drop-oldest 兜底（丢最旧段保最新实时段）
+  maxsize: 16            # seg_q 硬上限（兜底，绝不撑爆内存）
+  recover_grace_s: 2.0   # 维持低压多久才宣告恢复（防抖）
+  boost_threshold: 0.62  # L1 减量时的 VAD 阈值（高于默认 0.5 → 更不敏感）
+  boost_min_silence_ms: 500  # L1 减量时的最短静音门限（长于默认 → 晚断句）
 
 session:
   dir: ~/.rectheword/sessions

@@ -52,6 +52,20 @@ class SileroVad:
         self._chunks: list[bytes] = []
         self._win_idx = 0          # 绝对窗序号
 
+    # ---- 运行时可调（积压自适应：源头减量）----
+
+    def set_threshold(self, t: float) -> None:
+        """动态调整语音判定阈值（越高越不敏感 → 少产段，用于积压减压）。"""
+        self.threshold = max(0.0, min(1.0, float(t)))
+
+    def set_min_silence_ms(self, ms: int) -> None:
+        """动态调整最短静音断句门限（越长越晚断句 → 段更少更长，减段数）。"""
+        self.min_silence_win = max(1, int(ms) // 32)
+
+    def set_min_speech_ms(self, ms: int) -> None:
+        """动态调整最短语音时长门限（越长越忽略短促噪声 → 少产段）。"""
+        self.min_speech_win = max(1, int(ms) // 32)
+
     def feed(self, pcm: bytes, lane: str = "mic") -> list[SpeechSegment]:
         """送入一段 PCM（任意长度），返回新产生的语音段（可能为空）。"""
         out: list[SpeechSegment] = []

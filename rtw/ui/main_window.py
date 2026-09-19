@@ -84,6 +84,9 @@ class LaneCard(QFrame):
 
 
 class MainWindow(QMainWindow):
+    toggle_overlay_requested = Signal()
+    minimize_requested = Signal()
+
     def __init__(self, bus, model_path: str, target_lang: str = "zh",
                  pipeline=None) -> None:
         super().__init__()
@@ -91,10 +94,18 @@ class MainWindow(QMainWindow):
         self.pipeline = pipeline  # 用于设备刷新 / 热切换（可选，测试可不传）
         self.overlay = None       # 由 app.py 装配后 attach
         self.setWindowTitle("RecTheWord — 实时字幕与翻译")
+        # 去原生边框：自定义标题栏（自绘 —/✕）。
+        # 注意：只加 FramelessWindowHint，绝不再加 WindowStaysOnTopHint——
+        # 后者在 Wayland/KDE 下会把窗口提升到置顶层，导致不进任务栏、最小化失效。
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.resize(1280, 760)
         self.setMinimumSize(1024, 640)
         self.setStyleSheet(MAIN_QSS)
-        self._t0 = time.monotonic()
+        self._drag_pos = None
+        self._title_bar = None
+        self._t0 = None            # 本次录制开始的 monotonic 时刻（None = 尚未开始）
+        self._accum = 0.0          # 已累计的录制秒数（跨多次 开始/暂停/停止）
+        self._pause_at = None      # 本次暂停起点（None = 未在暂停中）
         self._sentence_count = 0
         self._line_refs: dict[str, QLabel] = {}
         self._full_line_refs: dict[str, QLabel] = {}
@@ -103,6 +114,7 @@ class MainWindow(QMainWindow):
         self._started = False
 
         central = QWidget()
+        central.setObjectName("centralRoot")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -149,6 +161,7 @@ class MainWindow(QMainWindow):
         bar = QWidget()
         bar.setObjectName("topbar")
         bar.setFixedHeight(52)
+        self._title_bar = bar  # 拖动 / 双击最大化的命中区域
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(18, 0, 18, 0)
         lay.setSpacing(16)
@@ -181,7 +194,34 @@ class MainWindow(QMainWindow):
         tb_min.setObjectName("primaryBtn")
         tb_min.clicked.connect(self._on_generate_minutes)
         lay.addWidget(tb_min)
+        self.ov_toggle = QPushButton("🪟 浮窗")
+        self.ov_toggle.setObjectName("ghostBtn")
+        self.ov_toggle.setToolTip("切换字幕浮窗显隐")
+        self.ov_toggle.clicked.connect(self.toggle_overlay_requested.emit)
+        lay.addWidget(self.ov_toggle)
+        # 自定义窗口控件：— 切到悬浮界面 / ✕ 退出进程
+        self.win_min = QPushButton("—")
+        self.win_min.setObjectName("ghostBtn")
+        self.win_min.setToolTip("最小化（切换到悬浮窗界面）")
+        self.win_min.clicked.connect(self.minimize_requested.emit)
+        lay.addWidget(self.win_min)
+        self.win_close = QPushButton("✕")
+        self.win_close.setObjectName("ghostBtn")
+        self.win_close.setToolTip("关闭（退出整个程序）")
+        # 关键：连 app.quit() 而非 self.close()——self.close() 只关主窗，
+        # 浮窗还开着时 QApplication 不退出，进程就退不出。
+        self.win_close.clicked.connect(self._quit_app)
+        lay.addWidget(self.win_close)
         return bar
+
+    def _quit_app(self) -> None:
+        """退出整个程序（触发 aboutToQuit → pipe.stop 收尾）。"""
+        from PySide6.QtWidgets import QApplication
+        inst = QApplication.instance()
+        if inst is not None:
+            inst.quit()
+        else:
+            self.close()
 
     def _build_left(self) -> QWidget:
         panel = QWidget()
@@ -194,8 +234,13 @@ class MainWindow(QMainWindow):
         t = QLabel("声道")
         t.setObjectName("laneTitle")
         lay.addWidget(t)
-        self.lane_mic = LaneCard("麦克风", "WASAPI 输入 · 实时")
-        self.lane_sys = LaneCard("扬声器", "WASAPI 环回 · 对方声音")
+        import platform
+        if platform.system() == "Windows":
+            mic_sub, sys_sub = "WASAPI 输入 · 实时", "WASAPI 环回 · 对方声音"
+        else:
+            mic_sub, sys_sub = "ALSA 输入 · 实时", "扬声器环回 · 对方声音"
+        self.lane_mic = LaneCard("麦克风", mic_sub)
+        self.lane_sys = LaneCard("扬声器", sys_sub)
         lay.addWidget(self.lane_mic)
         lay.addWidget(self.lane_sys)
         # 设备刷新 / 运行时热切换
@@ -205,15 +250,23 @@ class MainWindow(QMainWindow):
         self._load_devices()
 
         lay.addSpacing(8)
-        for title in ("识别引擎", "说话人分离", "字幕外观"):
-            h = QLabel(title)
-            h.setObjectName("sectionHead")
-            lay.addWidget(h)
 
-        eng = QLabel("Qwen3-ASR 0.6B · CPU · int8")
+        # 识别引擎（标题紧跟其内容）
+        h1 = QLabel("识别引擎")
+        h1.setObjectName("sectionHead")
+        lay.addWidget(h1)
+        eng_text = "Qwen3-ASR 0.6B · CPU · int8"
+        if self.pipeline is not None:
+            acfg = self.pipeline.cfg.asr
+            eng_text = f"{acfg.model} · {acfg.device} · {acfg.compute_type}"
+        eng = QLabel(eng_text)
         eng.setObjectName("laneSub")
         lay.addWidget(eng)
 
+        # 说话人分离（标题紧跟其内容）
+        h2 = QLabel("说话人分离")
+        h2.setObjectName("sectionHead")
+        lay.addWidget(h2)
         sep_row = QHBoxLayout()
         sep_row.addWidget(QLabel("会后聚类标注"))
         sep_row.addStretch(1)
@@ -225,12 +278,15 @@ class MainWindow(QMainWindow):
         self.sep_toggle.toggled.connect(self._on_sep_toggled)
         sep_row.addWidget(self.sep_toggle)
         lay.addLayout(sep_row)
-
         note = QLabel("按音量变化自动猜测说话人（仅供参考，会后精修）")
         note.setObjectName("laneSub")
         note.setWordWrap(True)
         lay.addWidget(note)
 
+        # 字幕外观（标题紧跟其内容）
+        h3 = QLabel("字幕外观")
+        h3.setObjectName("sectionHead")
+        lay.addWidget(h3)
         self.font_spin = QComboBox()
         self.font_spin.addItems(["24 px", "28 px", "32 px"])
         self.font_spin.setCurrentIndex(1)
@@ -481,6 +537,50 @@ class MainWindow(QMainWindow):
     def attach_overlay(self, overlay) -> None:
         """app.py 装配后绑定浮窗，使状态切换能同步到浮窗状态栏。"""
         self.overlay = overlay
+        self._sync_ov_button()
+
+    def _sync_ov_button(self) -> None:
+        """按浮窗当前显隐更新切换按钮文案。"""
+        if self.overlay is None:
+            return
+        self.ov_toggle.setText("🪟 显示浮窗" if self.overlay.isHidden() else "🪟 隐藏浮窗")
+
+    # ---- 自定义标题栏：拖动 / 双击最大化 ----
+
+    def mousePressEvent(self, e) -> None:
+        """在自绘标题栏内按下 → 启动整窗拖动。
+
+        优先用合成器原生的 startSystemMove()（Wayland 下最可靠，由 KWin 接管拖动）；
+        不可用时回退到手算 move()。
+        """
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._title_bar is not None and self._title_bar.geometry().contains(e.position().toPoint()):
+                wh = self.windowHandle()
+                if wh is not None and hasattr(wh, "startSystemMove"):
+                    try:
+                        wh.startSystemMove()
+                        e.accept()
+                        return
+                    except Exception:
+                        pass
+                self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                e.accept()
+
+    def mouseMoveEvent(self, e) -> None:
+        if self._drag_pos is not None and e.buttons() & Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_pos)
+            e.accept()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        """双击标题栏 → 最大化 / 还原。"""
+        if self._title_bar is not None and self._title_bar.geometry().contains(e.position().toPoint()):
+            if self.isMaximized():
+                self.showNormal()
+            else:
+                self.showMaximized()
 
     # ---- 录音控制（开始 / 暂停 / 停止）----
 
@@ -501,6 +601,8 @@ class MainWindow(QMainWindow):
                 return
         self._stopped = False
         self._started = True
+        self._t0 = time.monotonic()   # 开始计时（待机时间不计入）
+        self._pause_at = None
         self.start_btn.setVisible(False)
         self.play_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
@@ -519,6 +621,17 @@ class MainWindow(QMainWindow):
     def _on_pause_toggled(self, checked: bool) -> None:
         """暂停/继续：冻结音频采集（VAD 不切句），UI 状态同步。"""
         self._paused = checked
+        if checked:
+            # 暂停：把本段时长累加进 _accum，冻结计时
+            if self._t0 is not None and self._pause_at is None:
+                self._accum += time.monotonic() - self._t0
+                self._t0 = None
+            self._pause_at = time.monotonic()
+        else:
+            # 继续：重新开始计时
+            if self._t0 is None:
+                self._t0 = time.monotonic()
+            self._pause_at = None
         if self.pipeline is not None:
             try:
                 if checked:
@@ -541,6 +654,12 @@ class MainWindow(QMainWindow):
     def _on_stop_clicked(self) -> None:
         """停止：结束会话 + 归档；解锁「精修说话人 / 生成会议纪要」+ 可重新开始。"""
         self._stopped = True
+        # 停止：结算本段时长，归零以便下次「开始新会议」从头计
+        if self._t0 is not None:
+            self._accum += time.monotonic() - self._t0
+            self._t0 = None
+        self._accum = 0.0
+        self._pause_at = None
         self.play_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.refine_btn.setEnabled(True)
@@ -681,8 +800,16 @@ class MainWindow(QMainWindow):
             if item and item.widget():
                 item.widget().deleteLater()
 
+    def _rec_seconds(self) -> int:
+        """当前录制时长（秒）：只累计「录音中」的时间，待机/暂停不计。"""
+        if self._t0 is None:
+            return int(self._accum)
+        if self._pause_at is not None:
+            return int(self._accum)  # 暂停中：冻结在暂停那一刻
+        return int(self._accum + (time.monotonic() - self._t0))
+
     def _tick(self) -> None:
-        s = int(time.monotonic() - self._t0)
+        s = self._rec_seconds()
         self.timer_lbl.setText(f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}")
         self.dock_timer.setText(f"{s // 60:02d}:{s % 60:02d}")
         # 说话人数 / 磁盘占用（真实值）

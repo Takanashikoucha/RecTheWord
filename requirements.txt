@@ -1,4 +1,5 @@
-# RecTheWord v2 — 由 install.ps1 用 uv 安装（uv pip install -r requirements.txt）
+# RecTheWord v2 — 由 install.ps1（Windows）/ install.sh（Linux）用 uv 安装
+# （uv pip install -r requirements.txt）
 qwen-asr
 onnxruntime
 numpy
@@ -9,3 +10,5 @@ pyyaml
 PySide6
 modelscope
 pyaudiowpatch; platform_system == "Windows"   # WASAPI 采集/环回（设备枚举 + 热切换）
+# Linux 采集走系统命令行工具（arecord/pacat/pw-cat，见 rtw/audio/linux_capture.py），
+# 无需额外 Python 绑定；scipy 用于重采样（上方已含）。
