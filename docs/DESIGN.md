@@ -29,6 +29,12 @@ Windows / Linux 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低�
   ONNX Runtime 的 int8 激活+权重量化（proper 融合），列为后续优化项。
 - **模型来源**：仅 ModelScope（ModelManager，断点续传 + 进度回报）。唯一破例：
   qfuxa 流式塔来自 HuggingFace（用户批准，已记录）。
+- **端到端延迟（语音开始→句子上屏，实测 83s 三语回放）**：
+  - 单实例 + max_speech 3s（balanced）：avg 4.05s / p50 4.32s / p90 5.01s / max 5.36s。
+  - 双实例（mic/sys 各一 ASR 并行）：avg 5.28s——**并未更快**，证明瓶颈是单段
+    解码耗时而非排队，故保留单实例（省内存）。
+  - max_speech 2s（fast，配合电平衰减保护）：段更短、单段解码更快，端到端延迟
+    进一步下降（待 4B 纠错模型稳定后复测更新）。
 
 ## 3. 架构
 
@@ -75,7 +81,9 @@ rtw/
         │              → VAD 切句（动态 pre_pad + 短间隔合并到上一段 + 冷启动保护）
         │              → seg_q（publish "seg"）
         ├─ _asr_dispatcher：单实例串行调度（FIFO + 追赶，两通道公平）
-        │     → seg → AsrWorker.transcribe（整句，max_speech 3s 短段）
+        │     → seg → AsrWorker.transcribe（整句，max_speech 2s 短段）
+        │     → 本地纠错（LocalCorrector.fix_translate，一次请求纠错+翻译，
+        │       无 API 时一并本地翻译；相似度守门防幻觉；失败回退原文）
         │     → publish "asr"（含 t_first_ms / speaker）
         │     → 段 RMS → CoarseDiarizer.assign（说话人槽，仅 live_diarize 时）
         │     → SessionStore.add_line（落盘）
@@ -153,16 +161,38 @@ ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩
 - **短间隔合并到上一段**：距上一段 < `skip_short_gap_ms`（300ms）的段，PCM 追加到
   上一段尾部（若上一段仍在队列），而非丢弃——碎片被吸收、音频不丢（治"所以""另"
   这类句首残片）。
-- **max_speech 3s（短段降延迟）**：`segment_policy=balanced` → max_speech 3000ms。
-  短段使单段 ASR 解码快，端到端延迟 p90 ~5s（vs 6s 段的 p90 ~8s）。实测双实例
-  （mic/sys 各一 ASR 并行）并未进一步降延迟——瓶颈是单段解码耗时而非排队，故保留
-  单实例（省内存）。
-- **分通道参数（方案 E）**：mic（真人易噪）threshold 0.5 / merge_gap 500 / pad_base 350；
-  sys（TTS 清晰）threshold 0.5 / merge_gap 500 / pad_base 300。
+- **max_speech 2s（短段降延迟）**：`segment_policy=fast` → max_speech 2000ms。
+  短段使单段 ASR 解码快，端到端延迟显著低于 3s/6s 段。实测双实例（mic/sys 各一
+  ASR 并行）并未进一步降延迟——瓶颈是单段解码耗时而非排队，故保留单实例（省内存）。
+- **电平衰减保护（FORCE-DEFER）**：max_speech 到点时，若末尾能量未衰减（pred 仍 ≥
+  0.8×threshold，话音未落），推迟强制断句（最多 16 窗/~512ms），避免把词/字从中间
+  切断。这是敢把 max_speech 压到 2s 的安全垫。
+- **段边界间隙（治句头串音）**：下一段 pre_pad 起点 = 上一段终点 + 2 窗（~64ms），
+  跳过上一段尾部残留音，治"下句句头出现上一句最后的音"（段边界重叠）。
+- **分通道参数（方案 E）**：mic（真人易噪）threshold 0.5 / merge_gap 350 / pad_base 350；
+  sys（TTS 清晰）threshold 0.5 / merge_gap 200 / pad_base 300。
 - **关键参数**：min_speech 100ms（弱 onset 快速确认）、min_silence 400ms（卡在句内
-  停顿~300ms 与句间停顿~500ms 之间）、merge_gap 300ms、threshold 0.5。
+  停顿~300ms 与句间停顿~500ms 之间）、merge_gap 300ms、threshold 0.5、pad_dyn_cap 300。
 - **max_speech 强制断句修复**：用 `_seg_anchor_win`（不被 merge_gap 重置的锚点）判断
   段时长，避免 merge_gap 重置 `_seg_start_win` 导致 10-14s 超长段（旧 bug）。
+
+### 4.8 本地纠错 + 翻译通道（Qwen3 0.6B，关闭 thinking）
+ASR 之外引入一个**本地 LLM 通道**（`llm/local_corrector.py`，独立子进程，与 ASR 对称
+的 spawn+Pipe 协议），承担两件事，**一次请求同时完成**（`fix_translate`，返回单个
+JSON `{"fixed","translated"}`，省一次往返）：
+
+- **纠错**：以最近 N 句（含**另一通道**，最多 10 条）为上下文，只改明显错字/同音字，
+  禁止补全缺失内容/添加新信息（小模型易脑补，提示词强约束 + JSON 输出 + 相似度守门
+  `<0.5` 丢弃幻觉）。过短片段（<4 字）跳过（残片纠错易帮倒忙）。
+- **本地翻译**：无翻译 API（`api.base` 为空）且开启 `local_translate` 时，把纠错后的
+  句子翻译成目标语（默认中文），整句一次性返回（非增量）。
+- **关闭 thinking**：`apply_chat_template(..., enable_thinking=False)`（TypeError 时退回
+  普通模板），跳过思维链提速。采样参数按 Qwen3 官方推荐（temperature 0.7 / top_p 0.8 /
+  top_k 20）。
+- **优雅降级**：模型缺失/加载失败/子进程崩溃 → 回退原始 ASR 文本 + 无翻译，不阻塞
+  流水线（运行时 `alive()` 健康检查）。
+- **模型**：Qwen3-0.6B（ModelScope，`models/Qwen3-0.6B`，install.sh 预取）。预留换更大
+  模型（如 4B）的能力——`fix_translate` 的单请求双任务设计对更大模型更友好。
 
 ## 5. 边缘情况与失败模式
 
@@ -185,18 +215,22 @@ ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩
 |---|---|
 | PySide6 + 应用 | ~0.5GB |
 | Qwen3-ASR 0.6B（fp32，单实例，两路共享） | ~1.5GB |
+| Qwen3 0.6B 纠错/翻译（fp32，独立子进程） | ~1.5GB |
 | Silero VAD ×2（ONNX） | ~0.2GB |
 | WASAPI 采集 | ~0.2GB |
-| **实时运行态合计** | **~2.5GB** |
+| **实时运行态合计** | **~4GB** |
 | 2h 长跑估算（稳态增量 + 每句边际） | <500MB 增长 |
 
 ## 7. 假设
 
 - Windows 10/11 x64 **或 Linux（Debian/Ubuntu/Fedora 等，需 PipeWire 或 PulseAudio）**，
   Python 3.10–3.12，首跑有网。
-- 实时 = 整句解码（max_speech 3s 短段）端到端 p50 ~4s / p90 ~5s；翻译只跟 final
-  （省 token、防抖动）。单 ASR 实例串行（实测双实例不进一步降延迟，瓶颈在单段解码
-  耗时而非排队，故保留单实例省内存）。
+- 实时 = 整句解码（max_speech 2s 短段 + 电平衰减保护）端到端 p50 ~4s / p90 ~5s
+  （3s 段实测 avg 4.05s / p90 5.01s；2s 段更短更快，待 4B 纠错模型稳定后复测）；
+  翻译只跟 final（省 token、防抖动）。单 ASR 实例串行（实测双实例不进一步降延迟，
+  瓶颈在单段解码耗时而非排队，故保留单实例省内存）。
+- 本地纠错/翻译通道（Qwen3 0.6B，关闭 thinking）默认开启，模型缺失/崩溃时优雅降级
+  回原始 ASR 文本 + 无翻译，不阻塞流水线。
 - 实时界面「麦克风 / 扬声器」两路；说话人粗分默认关闭（`live_diarize=false`，
   录制时不分说话人），精修走离线 `refine_speakers`。
 - 停止后会话归档；纪要为用户手动触发。

@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 MODELS = {
     "qwen3_asr": ("Qwen/Qwen3-ASR-0.6B", "models/Qwen3-ASR-0.6B"),
     "qwen3_asr_streaming": ("qfuxa/qwen3-asr-0.6b-streaming", "models/qwen3-asr-0.6b-streaming"),
+    "qwen3_llm": ("Qwen/Qwen3-0.6B", "models/Qwen3-0.6B"),
     "silero_vad": ("pengzhendong/silero-vad", "models/silero_vad"),
 }
 

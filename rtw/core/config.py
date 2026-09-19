@@ -53,8 +53,18 @@ class AsrCfg:
     device: str = "cpu"
     compute_type: str = "int8"
     threads: int = 8
-    segment_policy: str = "balanced"  # aggressive(1.5s) | balanced(3s)
+    segment_policy: str = "fast"  # fast(2s) | balanced(3s) | aggressive(1.5s)
     max_new_tokens: int = 128
+
+
+@dataclass
+class CorrectorCfg:
+    """本地纠错 + 翻译（Qwen3 0.6B，关闭 thinking）。"""
+    enabled: bool = True
+    model: str = "Qwen/Qwen3-0.6B"
+    threads: int = 4
+    context_sentences: int = 3   # 纠错用的前文句数
+    local_translate: bool = True  # 无翻译 API 时用本地翻译
 
 
 @dataclass
@@ -106,6 +116,7 @@ class Config:
     audio: AudioCfg = field(default_factory=AudioCfg)
     vad: VadCfg = field(default_factory=VadCfg)
     asr: AsrCfg = field(default_factory=AsrCfg)
+    corrector: CorrectorCfg = field(default_factory=CorrectorCfg)
     api: ApiCfg = field(default_factory=ApiCfg)
     ui: UiCfg = field(default_factory=UiCfg)
     session: SessionCfg = field(default_factory=SessionCfg)
@@ -148,6 +159,7 @@ def load_config(path: str | Path | None = None,
     _merge(cfg.audio, merged.get("audio", {}))
     _merge(cfg.vad, merged.get("vad", {}))
     _merge(cfg.asr, merged.get("asr", {}))
+    _merge(cfg.corrector, merged.get("corrector", {}))
     _merge(cfg.api, merged.get("api", {}))
     _merge(cfg.ui, merged.get("ui", {}))
     _merge(cfg.session, merged.get("session", {}))

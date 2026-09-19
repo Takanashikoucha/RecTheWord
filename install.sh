@@ -35,7 +35,7 @@ uv pip install --python .venv/bin/python torch --index-url https://download.pyto
 
 echo "==> [4/4] 预取模型 (ModelScope)"
 mkdir -p models
-.venv/bin/python -c "import sys; sys.path.insert(0,'.'); from rtw.core.model_manager import ModelManager; from rtw.core.events import EventBus; mm=ModelManager(__import__('pathlib').Path('models'), EventBus()); [mm.ensure(k) for k in ['qwen3_asr','silero_vad']]; print('models ready')"
+.venv/bin/python -c "import sys; sys.path.insert(0,'.'); from rtw.core.model_manager import ModelManager; from rtw.core.events import EventBus; mm=ModelManager(__import__('pathlib').Path('models'), EventBus()); [mm.ensure(k) for k in ['qwen3_asr','qwen3_llm','silero_vad']]; print('models ready')"
 
 echo ""
 echo "安装完成。运行 ./start.sh 启动。"

@@ -65,6 +65,8 @@ class Pipeline:
         self.target_lang = target_lang
         self.lanes: list[LaneState] = []
         self.asr: AsrWorkerClient | None = None
+        self.corrector = None  # 本地纠错+翻译（Qwen3 0.6B，warmup 初始化）
+        self._recent: dict[str, list[str]] = {}  # lane → 最近识别文本（纠错上下文）
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._stopped_once = False
@@ -118,9 +120,10 @@ class Pipeline:
             if a.source == "replay" and not replay_file:
                 continue
             ring = RingBuffer(int(a.sample_rate * a.chunk_ms / 1000 * 30))  # 30s 缓冲
-            # 切句上限：激进 1.5s / 均衡 3s（短段→ASR 解码快→端到端延迟低）
+            # 切句上限：fast 2s / balanced 3s / aggressive 1.5s（短段→ASR 解码快→延迟低）
+            # 有电平衰减保护（FORCE-DEFER）后，2s 不易切断字词
             sp = self.cfg.asr.segment_policy
-            max_speech = 1500 if sp == "aggressive" else (3000 if sp == "balanced" else 6000)
+            max_speech = {"fast": 2000, "balanced": 3000, "aggressive": 1500}.get(sp, 3000)
             # 方案选择：current=硬边界(VAD实时) / A=硬边界跟随ASR / B=去硬边界+tail_pad
             #          C=硬边界+pre_pad200+tail_pad100 / D=参数化(阈值+大BASE+DYN封顶+硬边界)
             scheme = getattr(self.cfg.vad, "scheme", "current")
@@ -225,6 +228,47 @@ class Pipeline:
             raise RuntimeError(f"ASR worker 启动失败: {self.asr.error_msg}")
         sm_asr.finish("ASR 就绪")
 
+        # 本地纠错 + 翻译（Qwen3 0.6B，可选；模型缺失则优雅降级）
+        ccfg = self.cfg.corrector
+        if ccfg.enabled:
+            sm_cor = StatusMachine(self.bus, "corrector_load")
+            sm_cor.begin("加载本地纠错/翻译模型…")
+            try:
+                from ..llm.local_corrector import LocalCorrectorClient
+                from ..core.config import APP_ROOT
+                import os as _os
+                # 模型路径解析：相对路径按仓库根解析；本地目录直接用；
+                # 仅当本地不存在时才经 ModelManager（避免 ModelScope 下载卡死启动）
+                model_path = ccfg.model
+                if not _os.path.isabs(model_path):
+                    model_path = str(APP_ROOT / model_path)
+                if not _os.path.isdir(model_path):
+                    from ..core.model_manager import ModelManager
+                    mm = ModelManager(self.cfg.models_dir(), self.bus)
+                    model_path = str(mm.ensure("qwen3_llm"))
+                import os as _os_dbg
+                if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                    print(f"[CORRECT-DBG] 初始化 corrector，路径={model_path}", flush=True)
+                self.corrector = LocalCorrectorClient(model_path, threads=ccfg.threads)
+                if self.corrector.error_msg:
+                    if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                        print(f"[CORRECT-DBG] corrector error_msg={self.corrector.error_msg}",
+                              flush=True)
+                    sm_cor.update(message=f"纠错模型加载失败（{self.corrector.error_msg}），降级")
+                    self.corrector.shutdown()
+                    self.corrector = None
+                else:
+                    if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                        print(f"[CORRECT-DBG] corrector 就绪", flush=True)
+                    sm_cor.finish("纠错/翻译模型就绪")
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                    print(f"[CORRECT-DBG] corrector 初始化异常: {e!r}\n"
+                          f"{traceback.format_exc()}", flush=True)
+                sm_cor.update(message=f"纠错模型不可用（{e}），降级")
+                self.corrector = None
+
         if self.api.base:
             sm_api = StatusMachine(self.bus, "api_health")
             sm_api.begin("翻译 API 连通性检查…")
@@ -284,6 +328,8 @@ class Pipeline:
         self.end_session()
         if self.asr:
             self.asr.shutdown()
+        if self.corrector:
+            self.corrector.shutdown()
 
     def reset(self) -> None:
         """重置 pipeline 以便开始新会议（不关 ASR 子进程，复用已加载的模型）。"""
@@ -506,6 +552,20 @@ class Pipeline:
         """fire-and-forget 调翻译 API（流式）；不阻塞 ASR worker。
         API 不可用时显式降级提示（等待态机制的一部分）。"""
         if not self.api.available:
+            # 本地翻译回退：无翻译 API 且开启 local_translate 且有纠错模型
+            if (self.cfg.corrector.local_translate and self.corrector is not None
+                    and src_lang.lower() != self.target_lang.lower()):
+                try:
+                    trans = self.corrector.translate(text, self.target_lang, timeout=20.0)
+                    if trans and trans.strip():
+                        self.bus.publish("trans", {"lane": lane, "seg_id": seg_id,
+                                                  "delta": trans.strip()})
+                        self._translations.setdefault(seg_id, []).append(trans.strip())
+                        self.stats["trans_done"] += 1
+                        self._rewritten[seg_id] = trans.strip()
+                        return
+                except Exception:  # noqa: BLE001
+                    pass  # 本地翻译失败 → 落到下面的显式降级
             self.bus.publish("trans_err", {
                 "lane": lane, "seg_id": seg_id,
                 "error": "翻译 API 不可用，仅显示原文"})
@@ -594,6 +654,17 @@ class Pipeline:
             last2_lane = last_lane
             last_lane = chosen
 
+    def _recent_texts(self, lane_name: str) -> list[str]:
+        """取纠错上下文：本 lane + 另一 lane 的最近句（交错，最多 10 条，排除当前句）。
+        跨通道上下文帮助 LLM 理解对话语境（问答对应关系）。"""
+        n = max(self.cfg.corrector.context_sentences, 10)
+        mine = self._recent.get(lane_name, [])
+        others = [l for l in self._recent if l != lane_name]
+        other_flat = [t for l in others for t in self._recent.get(l, [])]
+        # 本通道最近 + 他通道最近，合并去重（保序），取最后 n 条
+        combined = list(dict.fromkeys(mine + other_flat))
+        return combined[-n:]
+
     def _process_asr_seg(self, lane: LaneState, seg) -> None:
         """解码单个段（单实例：共享 self.asr 串行解码）。"""
         t0 = time.monotonic()
@@ -609,6 +680,47 @@ class Pipeline:
         text = res.get("text", "").strip()
         if not text:
             return
+        # 本地纠错（+ 无 API 时一并本地翻译）：拿前 N 句上下文（含另一通道）
+        # 守门：①过短片段(<4字)跳过（残片易被脑补）②相似度守门——纠错结果与原文
+        # 差异过大（<0.5）视为幻觉（用上下文替换/啰嗦重复），丢弃回退原文
+        local_translated = ""
+        corr_ok = (self.corrector is not None and self.corrector.alive())
+        if corr_ok and len(text) >= 4:
+            ctx = self._recent_texts(lane.name)
+            # 无翻译 API 且开启本地翻译 → 一次请求同时纠错+翻译（省一次往返）
+            src_lang = res.get("language", "")
+            want_local_trans = (self.cfg.corrector.local_translate
+                                and not self.api.available
+                                and src_lang.lower() != self.target_lang.lower())
+            try:
+                if want_local_trans:
+                    r = self.corrector.fix_translate(ctx, text, self.target_lang,
+                                                   timeout=10.0)
+                    fixed, local_translated = r.get("fixed", ""), r.get("translated", "")
+                else:
+                    fixed = self.corrector.correct(ctx, text, timeout=8.0)
+                    local_translated = ""
+                fixed = (fixed or "").strip()
+                if fixed and fixed != text:
+                    import difflib
+                    sim = difflib.SequenceMatcher(None, text, fixed).ratio()
+                    if sim < 0.5:
+                        if os.environ.get("RTW_DEBUG_CORRECT"):
+                            print(f"[CORRECT-DBG] {lane.name} 丢弃(幻觉 sim={sim:.2f}) "
+                                  f"「{text}」→「{fixed}」", flush=True)
+                        fixed = text  # 幻觉回退原文
+                    else:
+                        if os.environ.get("RTW_DEBUG_CORRECT"):
+                            print(f"[CORRECT-DBG] {lane.name} 「{text}」→「{fixed}」",
+                                  flush=True)
+                        text = fixed
+            except Exception:  # noqa: BLE001
+                if os.environ.get("RTW_DEBUG_CORRECT"):
+                    print(f"[CORRECT-DBG] {lane.name} 纠错失败，回退原文", flush=True)
+                fixed, local_translated = text, ""
+        elif os.environ.get("RTW_DEBUG_CORRECT"):
+            print(f"[CORRECT-DBG] corrector 不可用（{'未初始化' if self.corrector is None else '子进程已退出'}），降级",
+                  flush=True)
         lane.vad.confirm_segment_processed()
         self.stats["asr_done"] += 1
         # 维护调度状态：记录本段终点（跳过判定用）
@@ -633,6 +745,9 @@ class Pipeline:
             pcm_i16 = np.frombuffer(seg.pcm, dtype=np.int16).astype(np.float32)
             rms = float(np.sqrt(np.mean(pcm_i16 ** 2))) if len(pcm_i16) else 0.0
             speaker = self.diarizer.assign(lane.name, rms, seg.start_ms)
+        # 维护纠错上下文（本 lane 最近 N 句）
+        self._recent.setdefault(lane.name, []).append(text)
+        self._recent[lane.name] = self._recent[lane.name][-8:]
         self._translations[seg_id] = []
         self.bus.publish("asr", {
             "lane": lane.name, "seg_id": seg_id,
@@ -640,8 +755,16 @@ class Pipeline:
             "speaker": speaker,
             "t_first_ms": int(t_first * 1000), "t_final_ms": int(t_first * 1000),
         })
-        # P4：落盘（译文稍后由 _translate 完成时补写；seg_id 供精确回填）
+        # P4：落盘（译文稍后补写；seg_id 供精确回填）
         self.store.add_line(lane.name, seg.start_ms, text,
                            res.get("language", ""), speaker,
                            seg_id=seg_id)
-        self._translate(lane.name, seg_id, text, res.get("language", ""))
+        # 本地翻译已随纠错一并得到 → 直接发布，跳过 API 翻译
+        if local_translated:
+            self.bus.publish("trans", {"lane": lane.name, "seg_id": seg_id,
+                                      "delta": local_translated})
+            self._translations[seg_id] = [local_translated]
+            self.stats["trans_done"] += 1
+            self._rewritten[seg_id] = local_translated
+        else:
+            self._translate(lane.name, seg_id, text, res.get("language", ""))

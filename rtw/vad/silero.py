@@ -68,6 +68,8 @@ class SileroVad:
         self._seg_anchor_win = 0  # 段起点锚点（不被 merge_gap 重置，供 max_speech 判断实际时长）
         self._silence_run = 0
         self._speech_run = 0
+        self._force_defer = 0        # 强制断句已推迟的窗数（电平未衰减时）
+        self._force_defer_max = 16   # 最多推迟 16 窗（~512ms），防失控
         self._chunks: list[bytes] = []
         self._recent: list[tuple[int, bytes]] = []  # 滑动窗缓存（win_idx, raw），供前置 padding
         self._win_idx = 0          # 绝对窗序号
@@ -146,8 +148,12 @@ class SileroVad:
                     start = max(0, start)  # 冷启动直接追到 win 0
                 # 硬边界（方案A/当前）：pre_pad 起点绝不越过上一句终点（杜绝跨句重叠→重复句）
                 # 方案B：hard_boundary=False 时不夹紧，靠 tail_pad + pre_pad 封顶防重复
-                if self.hard_boundary and self._last_end_win is not None and start < self._last_end_win:
-                    start = self._last_end_win
+                # 边界间隙：下一段起点 = 上一段终点 + 2 窗（~64ms），跳过上一段尾部残留音，
+                # 治"下句句头出现上一句最后的音"（段边界重叠）
+                if self.hard_boundary and self._last_end_win is not None:
+                    boundary = self._last_end_win + 2
+                    if start < boundary:
+                        start = boundary
                 self._seg_start_win = start
                 self._seg_anchor_win = start  # 锚点（max_speech 用，不被 merge 重置）
                 self._chunks = []
@@ -173,11 +179,22 @@ class SileroVad:
                 else:
                     ended = True
             elif over_max:
-                ended = True  # 强制断句（用锚点，不受 merge_gap 重置 _seg_start_win 影响）
-                if os.environ.get("RTW_DEBUG_VAD"):
-                    print(f"[VAD-DBG] FORCE-CUT at win {self._win_idx} "
-                          f"(span {self._win_idx-self._seg_start_win} wins, "
-                          f"max_speech_win={self.max_speech_win})", flush=True)
+                # 电平衰减保护：若末尾能量未衰减（话音未落，pred 仍偏高），推迟强制断句，
+                # 避免把一个词/字从中间切断。最多推迟 _force_defer_max 个窗（防失控）。
+                if (self._force_defer < self._force_defer_max
+                        and pred >= self.threshold * 0.8):
+                    self._force_defer += 1  # 话音未落，本窗不切
+                    if os.environ.get("RTW_DEBUG_VAD"):
+                        print(f"[VAD-DBG] FORCE-DEFER win {self._win_idx} "
+                              f"(defer {self._force_defer}/{self._force_defer_max})",
+                              flush=True)
+                else:
+                    ended = True  # 强制断句（用锚点，不受 merge_gap 重置 _seg_start_win 影响）
+                    self._force_defer = 0
+                    if os.environ.get("RTW_DEBUG_VAD"):
+                        print(f"[VAD-DBG] FORCE-CUT at win {self._win_idx} "
+                              f"(span {self._win_idx-self._seg_start_win} wins, "
+                              f"max_speech_win={self.max_speech_win})", flush=True)
             if ended:
                 # 句尾保护：tail_pad_win>0 时少回退几个静音窗，留住弱尾音/尾字
                 retreat = max(0, self._silence_run - self.tail_pad_win)
@@ -192,4 +209,5 @@ class SileroVad:
                     self._last_end_win = end_win
                 self._in_speech = False
                 self._chunks = []
+                self._force_defer = 0  # 复位强制断句推迟计数
         self._win_idx += 1
