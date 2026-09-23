@@ -33,6 +33,7 @@ main.py                  # 顶层入口（环境检查 → 模型就位 → UI�
 rtw/                     # 全部应用模块
   ├─ core/               # EventBus / StatusMachine / Config / ModelManager(ModelScope)
   ├─ audio/             # RingBuffer / ReplaySource / WASAPI(Windows) / Linux(PW·Pulse·ALSA)
+  ├─ wisp_audio/        # 复刻 Wisp 的 Windows 音频获取链路（枚举→采集→有界传输→DSP→VAD）
   ├─ vad/               # SileroVad(ONNX)
   ├─ asr/               # AsrWorker 子进程（Qwen3-ASR 整句解码，与 UI 零竞争）
   ├─ llm_api/           # LlmApiClient（OpenAI 兼容，SSE 流式 + 故障注入）
@@ -111,6 +112,47 @@ python main.py
 - `config.yaml` 的 `audio.source` 缺省时**平台自适应**：Windows→wasapi，Linux→alsa；
   也可显式设为 `wasapi` / `alsa` / `replay`（测试注入）。
 - 无音频设备的环境（如 CI/无头服务器）：设备枚举返回空列表，链路可走 `replay` 注入做端到端测试。
+
+## wisp_audio（复刻 Wisp 的 Windows 音频获取链路）
+
+`rtw/wisp_audio/` 独立子包，把 [Wisp](https://github.com/ppXD/Wisp)（Rust/Tauri）在
+Windows 平台下「**设备枚举 → 音频获取 → 传输给 VAD**」的完整过程用 Python 复刻，
+逐函数对应 Wisp 源码。采集后端用 `pyaudiowpatch`（WASAPI 的 Python 绑定，Wisp 用
+`cpal` 的 Python 等价物）；非 Windows 下优雅降级（枚举返回空、采集源抛友好异常），
+真实 WASAPI 采集在 Windows 真机激活。
+
+**链路**（与 Wisp 同构）：
+
+```
+devices.list_input_devices / list_loopback_devices   # 设备枚举
+        │
+mic.MicSource / loopback.WasapiLoopbackSource      # 音频获取（专线程采集 WASAPI）
+        │  帧 → 抗混叠重采样到 16k 单声道
+channel.FrameChannel（有界 drop-oldest 传输，容量 1024 ≈ 10-20s）
+        │
+dsp.Resampler（抗混叠 windowed-sinc）+ normalize.normalize_for_asr
+        │  → int16 PCM
+pipeline.VadFeeder → vad.SileroVad.feed()          # 传输给 VAD 切句
+```
+
+**模块一览**（括号内为对应的 Wisp Rust 源）：
+
+| 模块 | 作用 | Wisp 对应 |
+|---|---|---|
+| `frame.py` | `AudioFrame`（f32/sr/ch/ts）+ `AudioSource` 抽象 | `wisp-core/src/audio.rs` |
+| `channel.py` | `FrameChannel` 有界 drop-oldest 帧队列 | `wisp-core/src/channel.rs` |
+| `devices.py` | 设备枚举（输入 + WASAPI 环回，走 pyaudiowpatch） | `list_input_devices` + 环回发现 |
+| `mic.py` | `MicSource` WASAPI 麦克风采集（专线程→通道） | `wisp-audio/src/mic.rs` |
+| `loopback.py` | `WasapiLoopbackSource` WASAPI 环回（系统音） | `wisp-loopback/src/lib.rs` |
+| `replay.py` | `ReplaySource` 文件回放注入源（供非 Windows 端到端验证） | `MediaSource`/`WavSource` |
+| `dsp.py` | `downmix_to_mono` / `resample_linear` / `Resampler`（抗混叠）/ `to_mono_16k` | `wisp-audio/src/dsp.rs` |
+| `normalize.py` | `normalize_for_asr`（70Hz 高通去直流 + 语音门控 RMS 归一到 -20dBFS + 峰值封顶 -1dBFS + 最大增益 +20dB） | `wisp-audio/src/preprocess.rs` |
+| `mixer.py` | `MeetingMixer`（Dugan 增益共享自动混音，凸组合永不削顶） | `wisp-audio/src/mixer.rs` |
+| `pipeline.py` | `VadFeeder`（源→通道→DSP→int16 PCM→VAD 胶水层） | 管线装配 |
+
+**验证哲学**（同 Wisp）：headless 跑单元/集成（`ReplaySource → FrameChannel → DSP →
+真实 SileroVad` 端到端，见 `tests/test_wisp_audio.py`，37 项全绿）；真实 WASAPI
+采集/环回属硬件门控，在 Windows 真机上验收。
 
 > 模型不内嵌 git（GitHub 单文件上限 100MB），安装时从 ModelScope 拉取（ModelManager，
 > 断点续传 + 进度回报给 splash）。唯一破例的 qfuxa 流式塔来自 HuggingFace（用户批准）。
