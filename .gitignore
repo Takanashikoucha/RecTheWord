@@ -11,7 +11,7 @@ venv/
 .uv-cache/
 
 # Model caches (downloaded at install/runtime from ModelScope) — never commit.
-# Models are fetched by install.ps1 (ModelManager) so the repo stays small.
+# Models are fetched by install.sh (ModelManager) so the repo stays small.
 # The single documented exception (qfuxa streaming tower) is also runtime-fetched.
 models/
 .modelscope_cache/
