@@ -63,7 +63,7 @@ def run_app(cfg, bus) -> int:
                     log.warning("silero_vad 下载失败：%s（VAD 将不可用）", e)
 
             if not model_dir.exists() or not any(model_dir.iterdir()):
-                sm_env.error("ASR 模型文件缺失，请先运行 install.ps1")
+                sm_env.error("ASR 模型文件缺失，请先运行 install.sh")
                 startup_result["error"] = "model_missing"
                 return
             sm_env.finish("环境就绪")

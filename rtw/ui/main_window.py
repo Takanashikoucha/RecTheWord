@@ -255,11 +255,7 @@ class MainWindow(QMainWindow):
         t = QLabel("声道")
         t.setObjectName("laneTitle")
         lay.addWidget(t)
-        import platform
-        if platform.system() == "Windows":
-            mic_sub, sys_sub = "WASAPI 输入 · 实时", "WASAPI 环回 · 对方声音"
-        else:
-            mic_sub, sys_sub = "ALSA 输入 · 实时", "扬声器环回 · 对方声音"
+        mic_sub, sys_sub = "ALSA 输入 · 实时", "扬声器环回 · 对方声音"
         self.lane_mic = LaneCard("麦克风", mic_sub)
         self.lane_sys = LaneCard("扬声器", sys_sub)
         lay.addWidget(self.lane_mic)

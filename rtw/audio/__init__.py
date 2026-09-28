@@ -1,4 +1,4 @@
 from .ring_buffer import RingBuffer
-from .replay_source import ReplaySource
+from .linux_capture import LinuxCapture, LinuxDeviceManager, probe_backend
 
-__all__ = ["RingBuffer", "ReplaySource"]
+__all__ = ["RingBuffer", "LinuxCapture", "LinuxDeviceManager", "probe_backend"]

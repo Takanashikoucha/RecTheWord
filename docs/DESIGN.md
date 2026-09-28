@@ -5,10 +5,10 @@
 
 ## 1. 目标
 
-Windows / Linux 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低延迟实时处理：
+Linux 纯 CPU（无 GPU）桌面应用，面向**会议场景**的低延迟实时处理：
 
-1. **双通道实时识别 + 翻译**：麦克风（WASAPI 输入）+ 扬声器（WASAPI 环回）各自
-   独立 VAD + ASR；中/日/英自动语种检测（韩/德可扩展）。
+1. **双通道实时识别 + 翻译**：麦克风（ALSA 输入）+ 扬声器（PulseAudio/PipeWire
+   sink monitor 环回）各自独立 VAD + ASR；中/日/英自动语种检测（韩/德可扩展）。
 2. **实时字幕**：VAD 切句 → 整句解码 → 上屏，麦/扬彩色徽标分列。
 3. **实时翻译**：仅走 OpenAI 兼容 API（SSE 流式）；API 不可用时显式降级。
 4. **说话人粗分**：实时零算力启发式；会后 pyannote 精修为可选模块。
@@ -52,8 +52,6 @@ rtw/
   ├─ audio/
   │   ├─ ring_buffer.py       # RingBuffer（30s 环形缓冲）
   │   ├─ preprocess.py        # 慢启动快释放压缩器（抬高电平，提升弱句首信噪比）
-  │   ├─ replay_source.py     # ReplaySource（WASAPI 抽象 / 测试注入）
-  │   ├─ devices.py           # DeviceManager + WasapiSource（Windows WASAPI 输入/环回）
   │   └─ linux_capture.py     # LinuxCapture + LinuxDeviceManager（PW·Pulse monitor + ALSA mic）
   ├─ vad/silero.py           # SileroVad（ONNX，32ms 窗，流式判停 + 强制断句 + 运行时可调阈值）
   ├─ asr/worker.py           # AsrWorker 子进程（spawn + Pipe IPC，Qwen3 整句解码）
@@ -74,7 +72,7 @@ rtw/
 ### 数据流（运行时）
 
 ```
-采集源（Windows=WASAPI / Linux=PW·Pulse monitor + ALSA / 测试=ReplaySource）
+采集源（Linux=PW·Pulse monitor + ALSA）
   ├─ sys → RingBuffer → 压缩器预处理 → SileroVad ─┐
   └─ mic → RingBuffer → 压缩器预处理 → SileroVad ─┴→ 各自 seg_q（BacklogGuard 监控深度）
         ├─ _lane_loop：drain ring → 预处理（慢启动快释放压缩，抬电平保弱句首）
@@ -123,15 +121,16 @@ splash 进度条据此显式告知用户，杜绝无声等待。
 翻译 / 纪要**仅走 API**。API 不可达时：ASR 照常出字幕，翻译/纪要**显式报错**
 （"翻译 API 不可用，仅显示原文" / Connection refused），不静默失败。
 
-### 4.5 跨平台音频采集（Windows / Linux 对称）
-两平台提供同形接口（`start/stop/join/switch` + 往 RingBuffer 写 PCM16 16kHz mono），
-`orchestrator` 按 `audio.source` 分派，上层零感知：
-- **Windows**：`devices.py`（WASAPI 输入 + 官方环回虚拟设备）。
-- **Linux**：`linux_capture.py`（mic 走 `arecord`/ALSA；sys 环回走 PulseAudio/PipeWire
-  的 **sink monitor source**——Linux 下 WASAPI 环回的等价物）。后端自动探测
-  PipeWire → PulseAudio → 纯 ALSA。
-- 非对应平台优雅降级：`enumerate` 返回空列表，链路可走 `replay` 注入做端到端测试。
-- `audio.source` 缺省时**平台自适应**（Windows→wasapi / Linux→alsa）。
+### 4.5 Linux 音频采集（PipeWire / PulseAudio / ALSA）
+`linux_capture.py` 提供单路采集源 `LinuxCapture`（`start/stop/join/switch` + 往
+RingBuffer 写 PCM16 16kHz mono）与设备枚举 `LinuxDeviceManager`：
+- **mic**：走 `arecord`/ALSA 直接采集（最稳健，与音频栈解耦）。
+- **sys 环回**：走 PulseAudio/PipeWire 的 **sink monitor source**（`pacat -r` /
+  `pw-cat -r`），捕获本机扬声器播放的声音。
+- 后端自动探测：PipeWire（现代发行版默认）→ PulseAudio → 纯 ALSA。
+- 无音频后端的环境（CI / 无头服务器）：`enumerate` 返回空列表，链路可 headless 跑通。
+- 采集实现用子进程（pacat / pw-cat / arecord）而非纯 Python 绑定：避免引入 portaudio
+  原生扩展的构建负担，且与系统音频栈解耦、稳健。
 
 ### 4.6 积压自适应恢复（两级，防 ASR 无限堆积）
 ASR 处理跟不上 VAD 产段速度时，队列会无限堆积 → 实时性崩坏 + 性能下降。
@@ -217,14 +216,14 @@ JSON `{"fixed","translated"}`，省一次往返）：
 | Qwen3-ASR 0.6B（fp32，单实例，两路共享） | ~1.5GB |
 | Qwen3 0.6B 纠错/翻译（fp32，独立子进程） | ~1.5GB |
 | Silero VAD ×2（ONNX） | ~0.2GB |
-| WASAPI 采集 | ~0.2GB |
+| Linux 音频采集（子进程） | ~0.2GB |
 | **实时运行态合计** | **~4GB** |
 | 2h 长跑估算（稳态增量 + 每句边际） | <500MB 增长 |
 
 ## 7. 假设
 
-- Windows 10/11 x64 **或 Linux（Debian/Ubuntu/Fedora 等，需 PipeWire 或 PulseAudio）**，
-  Python 3.10–3.12，首跑有网。
+- Linux（Debian/Ubuntu/Fedora 等，需 PipeWire 或 PulseAudio），Python 3.10–3.12，
+  首跑有网。
 - 实时 = 整句解码（max_speech 2s 短段 + 电平衰减保护）端到端 p50 ~4s / p90 ~5s
   （3s 段实测 avg 4.05s / p90 5.01s；2s 段更短更快，待 4B 纠错模型稳定后复测）；
   翻译只跟 final（省 token、防抖动）。单 ASR 实例串行（实测双实例不进一步降延迟，

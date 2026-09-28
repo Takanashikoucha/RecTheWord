@@ -1,21 +1,22 @@
-"""Linux 音频采集后端：PipeWire / PulseAudio（monitor 环回）+ PortAudio（ALSA 麦克风）。
+"""Linux 音频采集后端：PipeWire / PulseAudio（monitor 环回）+ ALSA（麦克风）。
 
-与 Windows 侧 ``devices.py``（WASAPI + 环回）对称，提供两类设备：
-  mic = 输入设备（麦克风）—— 走 PortAudio(ALSA) 直接采集
+提供两类设备：
+  mic = 输入设备（麦克风）—— 走 ALSA（arecord）直接采集
   sys = 输出设备的环回（loopback）—— 走 PulseAudio/PipeWire 的 sink monitor source
 
-设计要点（与 WasapiSource 同接口，便于 orchestrator 无缝替换）：
+设计要点：
   - LinuxCapture：单路采集源，start()/stop()/join()/switch(device_id) 热切换，
     往 RingBuffer 写 PCM16 16kHz mono，chunk 512 样本 / 1024 字节。
     设备失效（拔线 / 服务重启）→ 指数退避自动重连（封顶 5s）。
-  - LinuxDeviceManager：枚举 mic（PortAudio 输入设备）与 sys（sink monitor）。
+  - LinuxDeviceManager：枚举 mic（ALSA 输入设备）与 sys（sink monitor）。
   - 采集实现用子进程（pacat / pw-cat / arecord）而非纯 Python 绑定：
     避免引入 portaudio 原生扩展的构建负担，且与系统音频栈解耦、稳健。
-    采样率统一重采样到 16kHz（scipy.signal.resample_poly），与 ReplaySource 一致。
+    采样率统一重采样到 16kHz（scipy.signal.resample_poly）。
 
-PCM 约定：16kHz mono int16，32ms chunk（512 样本 / 1024 字节），与 ReplaySource 一致。
+PCM 约定：16kHz mono int16，32ms chunk（512 样本 / 1024 字节）。
 
-非 Linux 环境：probe() 返回不可用，enumerate 返回空列表（UI 显示提示，链路走 replay）。
+无音频后端的环境（如 CI / 无头服务器）：probe() 返回不可用，enumerate 返回空列表
+（UI 显示提示，链路可 headless 跑通）。
 """
 from __future__ import annotations
 
@@ -86,7 +87,7 @@ def _resample_to_target(x: np.ndarray, sr: int) -> np.ndarray:
 
 
 class LinuxCapture:
-    """单路 Linux 采集源（mic=PortAudio/ALSA 输入 / sys=sink monitor 环回），与 WasapiSource 同接口。
+    """单路 Linux 采集源（mic=ALSA 输入 / sys=sink monitor 环回）。
 
     热切换：switch(new_id) 停止当前流、用新设备重启，RingBuffer 不清空（下游 VAD 连续）。
     设备失效 → 自动重连循环（指数退避，封顶 5s）。
@@ -223,7 +224,7 @@ class LinuxCapture:
 
 
 class LinuxDeviceManager:
-    """设备枚举 + 刷新。非 Linux 返回空列表（UI 显示提示，链路走 replay）。"""
+    """设备枚举 + 刷新。无音频后端返回空列表（UI 显示提示，链路可 headless 跑通）。"""
 
     def __init__(self) -> None:
         self.backend = probe_backend() if IS_LINUX else ""

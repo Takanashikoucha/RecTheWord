@@ -24,8 +24,6 @@ from ..core.config import Config
 from ..core.events import EventBus
 from ..core.status_machine import StatusMachine
 from ..audio.ring_buffer import RingBuffer
-from ..audio.replay_source import ReplaySource
-from ..audio.devices import DeviceManager, WasapiSource
 from ..audio.linux_capture import LinuxDeviceManager, LinuxCapture, probe_backend
 from ..vad.silero import SileroVad, SpeechSegment
 from ..asr.worker import AsrWorkerClient
@@ -42,8 +40,6 @@ class LaneState:
     name: str
     ring: RingBuffer
     vad: SileroVad
-    rep: ReplaySource | None = None
-    wasapi: WasapiSource | None = None
     lin: LinuxCapture | None = None
     seg_q: "queue.Queue[SpeechSegment]" = field(default_factory=queue.Queue)
     backlog: "BacklogGuard | None" = None  # 积压自适应守护（setup_lanes 装配）
@@ -100,25 +96,22 @@ class Pipeline:
     # ---------- 启动 ----------
 
     def setup_lanes(self) -> None:
-        """按 config 建立各声道（wasapi / alsa(Linux) 采集 或 replay 注入）。
+        """按 config 建立各声道（alsa 采集，Linux 单一后端）。
 
-        平台自适应：source 缺省/为空时，Windows 走 wasapi，Linux 走 alsa。
+        source 缺省/为空时回落 alsa；非法值（如历史遗留 wasapi）也回落 alsa。
         """
         a = self.cfg.audio
         src = (a.source or "").lower()
-        if src not in ("wasapi", "alsa", "replay"):
-            import platform
-            src = "wasapi" if platform.system() == "Windows" else "alsa"
+        if src != "alsa":
+            src = "alsa"
             a.source = src
-        self.device_mgr = DeviceManager() if src == "wasapi" else LinuxDeviceManager()
-        pairs = [("mic", a.replay_mic), ("sys", a.replay_sys)]
+        self.device_mgr = LinuxDeviceManager()
+        pairs = [("mic", None), ("sys", None)]
         # VAD 加载显式广播（splash 第 2 步）
         sm_vad = StatusMachine(self.bus, "vad_load")
         sm_vad.begin("加载语音活动检测…")
         self._vad_ready = False
-        for name, replay_file in pairs:
-            if a.source == "replay" and not replay_file:
-                continue
+        for name, _ in pairs:
             ring = RingBuffer(int(a.sample_rate * a.chunk_ms / 1000 * 30))  # 30s 缓冲
             # 切句上限：fast 2s / balanced 3s / aggressive 1.5s（短段→ASR 解码快→延迟低）
             # 有电平衰减保护（FORCE-DEFER）后，2s 不易切断字词
@@ -168,20 +161,9 @@ class Pipeline:
             bl = self.cfg.backlog
             lane.seg_q = queue.Queue(maxsize=max(bl.maxsize, bl.high_watermark + 1))
             lane.backlog = BacklogGuard(bl, lane.seg_q)
-            if a.source == "wasapi":
-                dev_idx = getattr(a, f"{name}_device", None)
-                lane.wasapi = WasapiSource(ring, name, device_index=dev_idx,
-                                          device_manager=self.device_mgr)
-            elif a.source == "alsa":
-                dev_idx = getattr(a, f"{name}_device", None)
-                lane.lin = LinuxCapture(ring, name, device_id=dev_idx,
-                                       device_manager=self.device_mgr)
-            elif a.source == "replay" and replay_file:
-                from pathlib import Path
-                p = Path(replay_file)
-                if not p.is_absolute():
-                    p = Path(__file__).resolve().parent.parent.parent / p
-                lane.rep = ReplaySource(ring, p, speed=a.replay_speed)
+            dev_idx = getattr(a, f"{name}_device", None)
+            lane.lin = LinuxCapture(ring, name, device_id=dev_idx,
+                                    device_manager=self.device_mgr)
             self.lanes.append(lane)
         sm_vad.finish("VAD 就绪")
         self._vad_ready = True
@@ -197,9 +179,6 @@ class Pipeline:
     def switch_device(self, lane: str, device_index: int | None) -> None:
         """运行时热切换某路设备（自动重连，不打断下游 VAD）。"""
         for l in self.lanes:
-            if l.name == lane and l.wasapi:
-                l.wasapi.switch(device_index)
-                return
             if l.name == lane and l.lin:
                 l.lin.switch(device_index)
                 return
@@ -289,10 +268,6 @@ class Pipeline:
             t = threading.Thread(target=self._lane_loop, args=(lane,), daemon=True)
             t.start()
             self._workers.append(t)
-            if lane.rep:
-                lane.rep.start()
-            if lane.wasapi:
-                lane.wasapi.start()
             if lane.lin:
                 lane.lin.start()
 
@@ -485,14 +460,6 @@ class Pipeline:
                         "end_ms": seg.end_ms, "dur_ms": seg.end_ms - seg.start_ms,
                     })
                     self._enqueue_seg(lane, seg)
-            if lane.rep and lane.rep.done.is_set():
-                # 回放结束：排空残余后退出
-                time.sleep(0.2)
-                data = lane.ring.drain()
-                if data:
-                    for seg in lane.vad.feed(data, lane.name):
-                        self._enqueue_seg(lane, seg)
-                break
             time.sleep(0.005)
         # 收尾：确保 VAD 恢复基线灵敏度
         if reduced:

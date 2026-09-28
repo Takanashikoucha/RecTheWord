@@ -13,15 +13,11 @@ APP_ROOT = Path(__file__).resolve().parent.parent.parent  # 仓库根（main.py 
 
 @dataclass
 class AudioCfg:
-    source: str = ""                 # 缺省=平台自适应（Windows→wasapi / Linux→alsa）；
-                                    # 也可显式 wasapi | alsa | replay（测试注入）
+    source: str = "alsa"             # 采集后端（Linux 单一后端）；显式可填 alsa
     mic_device: str | None = None    # None = 系统默认输入
-    sys_device: str | None = None    # None = 默认输出环回
+    sys_device: str | None = None    # None = 默认输出环回（sink monitor）
     sample_rate: int = 16000
     chunk_ms: int = 32
-    replay_mic: str | None = None    # 回放音频文件（相对 APP_ROOT）
-    replay_sys: str | None = None
-    replay_speed: float = 1.0
 
 
 @dataclass
@@ -218,7 +214,7 @@ HOT_APPLICABLE = {
 RESTART_REQUIRED = {
     "vad": ("pad_strategy", "live_diarize", "scheme", "pad_base_ms", "pad_dyn_cap_ms"),  # 需重建 lane/VAD 才生效
     "asr": ("model", "device", "compute_type", "threads", "segment_policy"),
-    "audio": ("source", "sample_rate", "chunk_ms"),
+    "audio": ("source", "mic_device", "sys_device", "sample_rate", "chunk_ms"),
     "backlog": ("enabled", "high_watermark", "low_watermark", "drop_watermark",
                 "maxsize", "recover_grace_s", "boost_threshold",
                 "boost_min_silence_ms"),

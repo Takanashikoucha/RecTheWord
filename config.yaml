@@ -1,14 +1,10 @@
 # RecTheWord v2 配置（锚定仓库根）
 audio:
-  source: ""              # 缺省=平台自适应（Windows→wasapi / Linux→alsa）；显式可选 wasapi | alsa | replay
+  source: alsa            # 采集后端（Linux 单一后端）；显式可填 alsa
   mic_device: null
   sys_device: null
   sample_rate: 16000
   chunk_ms: 32
-  # replay 字段仅测试用（source=replay 时生效）
-  replay_mic: tests/fixtures/meeting_sim/zh.wav
-  replay_sys: tests/fixtures/meeting_sim/en.wav
-  replay_speed: 1.0
 
 vad:
   # 分通道参数（mic 真人易噪 / sys TTS 清晰）；base 值为缺省，per-channel 优先
