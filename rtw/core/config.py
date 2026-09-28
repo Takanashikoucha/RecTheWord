@@ -28,12 +28,12 @@ class VadCfg:
     max_speech_ms: int = 3000        # 短段（balanced）→ ASR 解码快 → 延迟低
     merge_gap_ms: int = 300          # 紧贴碎段合并回一句，但不粘真句子
     window_ms: int = 32
-    # 动态 pre_pad 实验开关
-    pad_strategy: str = "dyn_shared"  # fixed | dyn_shared | dyn_perlane
+    # pre_pad 策略（治开场/句首丢字）：scheme 选策略，pad_strategy 选动态值共享方式
+    pad_strategy: str = "dyn_shared"  # fixed(固定) | dyn_shared(双通道共用一值) | dyn_perlane(各通道独立)
     live_diarize: bool = False       # 录制时是否实时粗分说话人（False=仅离线精修区分）
-    scheme: str = "B"                # current | A(边界跟随ASR) | B(去硬边界+tail_pad) | C | D(参数化)
-    pad_base_ms: int = 250           # 方案 D：固定 pre_pad 基底（治开场/句首丢字）
-    pad_dyn_cap_ms: int = 400        # 方案 D：动态补充封顶（压延迟）
+    scheme: str = "E"                # A(边界跟随ASR) | B(去硬边界+tail_pad) | C(动态跟随) | D(参数化 base+cap) | E(分通道)
+    pad_base_ms: int = 250           # 方案 D/E：固定 pre_pad 基底
+    pad_dyn_cap_ms: int = 400        # 方案 D/E：动态补充封顶（压延迟）
     # 分通道参数（方案 E）：mic 真人易噪需抗噪，sys TTS 清晰可更细
     mic_threshold: float = 0.5
     sys_threshold: float = 0.4
@@ -47,7 +47,6 @@ class VadCfg:
 class AsrCfg:
     model: str = "Qwen/Qwen3-ASR-0.6B"
     device: str = "cpu"
-    compute_type: str = "int8"
     threads: int = 8
     segment_policy: str = "fast"  # fast(2s) | balanced(3s) | aggressive(1.5s)
     max_new_tokens: int = 128
@@ -169,7 +168,8 @@ USER_SETTINGS_DIR = Path("~/.rectheword").expanduser()
 USER_SETTINGS_FILE = USER_SETTINGS_DIR / "settings.yaml"
 
 # 面板可持久化的 section（只 dump 这些，避免把模型路径等敏感/绝对路径写出去）
-_PERSIST_SECTIONS = ("ui", "api", "vad")
+# 含 audio：用户改 mic_device/sys_device 后需重启，重启后须保留用户选择（不回落 config.yaml 默认）
+_PERSIST_SECTIONS = ("ui", "api", "vad", "audio")
 
 
 def _settings_path() -> Path:

@@ -215,34 +215,32 @@ class Pipeline:
             try:
                 from ..llm.local_corrector import LocalCorrectorClient
                 from ..core.config import APP_ROOT
-                import os as _os
                 # 模型路径解析：相对路径按仓库根解析；本地目录直接用；
                 # 仅当本地不存在时才经 ModelManager（避免 ModelScope 下载卡死启动）
                 model_path = ccfg.model
-                if not _os.path.isabs(model_path):
+                if not os.path.isabs(model_path):
                     model_path = str(APP_ROOT / model_path)
-                if not _os.path.isdir(model_path):
+                if not os.path.isdir(model_path):
                     from ..core.model_manager import ModelManager
                     mm = ModelManager(self.cfg.models_dir(), self.bus)
                     model_path = str(mm.ensure("qwen3_llm"))
-                import os as _os_dbg
-                if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                if os.environ.get("RTW_DEBUG_CORRECT"):
                     print(f"[CORRECT-DBG] 初始化 corrector，路径={model_path}", flush=True)
                 self.corrector = LocalCorrectorClient(model_path, threads=ccfg.threads)
                 if self.corrector.error_msg:
-                    if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                    if os.environ.get("RTW_DEBUG_CORRECT"):
                         print(f"[CORRECT-DBG] corrector error_msg={self.corrector.error_msg}",
                               flush=True)
                     sm_cor.update(message=f"纠错模型加载失败（{self.corrector.error_msg}），降级")
                     self.corrector.shutdown()
                     self.corrector = None
                 else:
-                    if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                    if os.environ.get("RTW_DEBUG_CORRECT"):
                         print(f"[CORRECT-DBG] corrector 就绪", flush=True)
                     sm_cor.finish("纠错/翻译模型就绪")
             except Exception as e:  # noqa: BLE001
                 import traceback
-                if _os_dbg.environ.get("RTW_DEBUG_CORRECT"):
+                if os.environ.get("RTW_DEBUG_CORRECT"):
                     print(f"[CORRECT-DBG] corrector 初始化异常: {e!r}\n"
                           f"{traceback.format_exc()}", flush=True)
                 sm_cor.update(message=f"纠错模型不可用（{e}），降级")

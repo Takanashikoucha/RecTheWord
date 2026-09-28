@@ -28,7 +28,6 @@ vad:
 asr:
   model: Qwen/Qwen3-ASR-0.6B
   device: cpu
-  compute_type: int8
   threads: 8                 # P5：锁定 8 核目标机的物理核数
   segment_policy: fast   # fast(2s)+电平衰减保护：段更短→单段解码更快→延迟更低（有 FORCE-DEFER 防切断字词）
   max_new_tokens: 128

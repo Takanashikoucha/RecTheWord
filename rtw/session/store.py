@@ -1,4 +1,4 @@
-"""会话存储：~/.rectheword/sessions/<ts>/{meta.json, mic.wav, sys.wav, transcript.jsonl, minutes.md, labels.json}"""
+"""会话存储：~/.rectheword/sessions/<ts>/{meta.json, transcript.jsonl, minutes.md, labels.json, transcript.md}"""
 from __future__ import annotations
 
 import json

@@ -66,7 +66,7 @@ def _child_main(conn) -> None:
 
 
 class AsrWorkerClient:
-    def __init__(self, model: str, compute: str = "int8",
+    def __init__(self, model: str,
                  max_new_tokens: int = 128, ready_timeout: float = 300.0,
                  threads: int = 8) -> None:
         self.ready = threading.Event()
